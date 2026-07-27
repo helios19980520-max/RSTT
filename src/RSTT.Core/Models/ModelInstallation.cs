@@ -6,4 +6,5 @@ public sealed record ModelInstallation(
     string Engine,
     IReadOnlyDictionary<string, string> Files,
     int NumThreads = 2,
-    string Provider = "cpu");
+    string Provider = "cpu",
+    int FeatureDimension = 80);

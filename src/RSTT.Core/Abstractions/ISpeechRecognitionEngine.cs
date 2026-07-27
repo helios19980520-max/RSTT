@@ -12,6 +12,10 @@ public interface ISpeechRecognitionEngine : IAsyncDisposable
 
     Task InitializeAsync(CancellationToken cancellationToken = default);
 
+    Task ReloadAsync(CancellationToken cancellationToken = default);
+
+    Task UnloadAsync(CancellationToken cancellationToken = default);
+
     Task StartAsync(CancellationToken cancellationToken = default);
 
     Task ProcessAudioAsync(AudioChunk chunk, CancellationToken cancellationToken = default);

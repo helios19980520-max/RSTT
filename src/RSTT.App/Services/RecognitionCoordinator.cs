@@ -17,6 +17,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private readonly TranscriptStabilizer _stabilizer;
     private readonly ILogger<RecognitionCoordinator> _logger;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private readonly SemaphoreSlim _resultLock = new(1, 1);
     private CancellationTokenSource? _listeningCancellation;
     private Task? _audioWorker;
     private bool _isListening;
@@ -60,7 +61,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         }
         catch (InvalidOperationException exception)
         {
-            _applicationState.TransitionTo(ApplicationState.ModelMissing, exception.Message, exception);
+            _applicationState.TransitionTo(ApplicationState.ModelMissing, "Install a speech model to begin", exception);
             LogModelNotReady(_logger, exception.Message);
         }
         catch (Exception exception)
@@ -103,6 +104,57 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             _applicationState.TransitionTo(ApplicationState.Error, "Audio capture could not be started.", exception);
             LogPipelineStartFailed(_logger, exception);
             await StopUnsafeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    public async Task ReloadModelAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_isListening || _audioWorker is not null)
+            {
+                await StopUnsafeAsync().ConfigureAwait(false);
+            }
+
+            _applicationState.TransitionTo(ApplicationState.ModelLoading, "Loading local speech model…");
+            await _speechEngine.ReloadAsync(cancellationToken).ConfigureAwait(false);
+            _applicationState.TransitionTo(ApplicationState.Ready, "Ready");
+        }
+        catch (InvalidOperationException exception)
+        {
+            _applicationState.TransitionTo(ApplicationState.ModelMissing, "Install a speech model to begin", exception);
+            LogModelNotReady(_logger, exception.Message);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _applicationState.TransitionTo(ApplicationState.Error, "Speech model could not be loaded.", exception);
+            LogEngineInitializationFailed(_logger, exception);
+            throw;
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    public async Task UnloadModelAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_isListening || _audioWorker is not null)
+            {
+                await StopUnsafeAsync().ConfigureAwait(false);
+            }
+
+            await _speechEngine.UnloadAsync(cancellationToken).ConfigureAwait(false);
+            _applicationState.TransitionTo(ApplicationState.ModelMissing, "Install a speech model to begin");
         }
         finally
         {
@@ -179,6 +231,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
     private async Task PublishRecognitionResultAsync(RecognitionResult result)
     {
+        await _resultLock.WaitAsync().ConfigureAwait(false);
         try
         {
             var update = _stabilizer.Process(result);
@@ -196,6 +249,10 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         {
             LogResultProcessingFailed(_logger, exception);
         }
+        finally
+        {
+            _resultLock.Release();
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -203,6 +260,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         _speechEngine.RecognitionResultAvailable -= OnRecognitionResultAvailable;
         await StopAsync().ConfigureAwait(false);
         _lifecycleLock.Dispose();
+        _resultLock.Dispose();
     }
 
     [LoggerMessage(LogLevel.Information, "Local speech model is not ready: {Message}")]

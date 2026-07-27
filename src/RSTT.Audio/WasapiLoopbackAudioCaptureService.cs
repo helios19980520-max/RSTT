@@ -15,6 +15,7 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
     private Channel<AudioChunk> _chunks = CreateChannel();
     private WasapiLoopbackCapture? _capture;
     private long _sequenceNumber;
+    private double _smoothedLevel;
     private bool _disposed;
 
     public WasapiLoopbackAudioCaptureService(ILogger<WasapiLoopbackAudioCaptureService> logger)
@@ -23,6 +24,8 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
     }
 
     public bool IsCapturing => _capture is not null;
+
+    public event EventHandler<AudioLevelEventArgs>? AudioLevelChanged;
 
     public Task<IReadOnlyList<AudioDevice>> GetOutputDevicesAsync(CancellationToken cancellationToken = default) =>
         Task.Run<IReadOnlyList<AudioDevice>>(() =>
@@ -50,6 +53,7 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
 
             _chunks = CreateChannel();
             _sequenceNumber = 0;
+            _smoothedLevel = 0;
             using var enumerator = new MMDeviceEnumerator();
             var device = string.IsNullOrWhiteSpace(deviceId)
                 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
@@ -114,6 +118,7 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
             var samples = _converter.Process(eventArgs.Buffer, eventArgs.BytesRecorded, capture.WaveFormat);
             if (samples.Length > 0)
             {
+                PublishAudioLevel(samples);
                 var chunk = new AudioChunk(Interlocked.Increment(ref _sequenceNumber), DateTimeOffset.UtcNow, samples);
                 if (!_chunks.Writer.TryWrite(chunk))
                 {
@@ -158,15 +163,36 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
         capture.StopRecording();
         capture.Dispose();
         _chunks.Writer.TryComplete();
+        _smoothedLevel = 0;
+        AudioLevelChanged?.Invoke(this, new AudioLevelEventArgs(0, 0));
         LogCaptureStopped(_logger);
     }
 
     private static Channel<AudioChunk> CreateChannel() => Channel.CreateBounded<AudioChunk>(new BoundedChannelOptions(96)
     {
-        FullMode = BoundedChannelFullMode.DropOldest,
+        FullMode = BoundedChannelFullMode.Wait,
         SingleReader = true,
         SingleWriter = true,
     });
+
+    private void PublishAudioLevel(float[] samples)
+    {
+        double sum = 0;
+        double peak = 0;
+        foreach (var sample in samples)
+        {
+            var absolute = Math.Abs(sample);
+            peak = Math.Max(peak, absolute);
+            sum += sample * sample;
+        }
+
+        var rms = Math.Sqrt(sum / samples.Length);
+        var normalized = Math.Clamp((20 * Math.Log10(Math.Max(rms, 0.000_001)) + 60) / 60, 0, 1);
+        _smoothedLevel = (_smoothedLevel * 0.72) + (normalized * 0.28);
+        AudioLevelChanged?.Invoke(
+            this,
+            new AudioLevelEventArgs(_smoothedLevel, Math.Clamp(peak, 0, 1)));
+    }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 

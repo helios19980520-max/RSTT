@@ -6,12 +6,14 @@ public sealed class AsyncRelayCommand : ICommand
 {
     private readonly Func<Task> _execute;
     private readonly Func<bool>? _canExecute;
+    private readonly Action<Exception>? _onException;
     private bool _isRunning;
 
-    public AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecute = null)
+    public AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecute = null, Action<Exception>? onException = null)
     {
         _execute = execute;
         _canExecute = canExecute;
+        _onException = onException;
     }
 
     public event EventHandler? CanExecuteChanged;
@@ -30,6 +32,13 @@ public sealed class AsyncRelayCommand : ICommand
         try
         {
             await _execute();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            _onException?.Invoke(exception);
         }
         finally
         {

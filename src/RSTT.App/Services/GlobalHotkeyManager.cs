@@ -32,6 +32,8 @@ public sealed class GlobalHotkeyManager : IDisposable
 
     public event EventHandler<RsttHotkey>? HotkeyPressed;
 
+    public event EventHandler? RegistrationFailed;
+
     public bool RegisterDefaults()
     {
         return Register(RsttHotkey.ToggleListening, Key.R)
@@ -64,7 +66,10 @@ public sealed class GlobalHotkeyManager : IDisposable
         _handle = new WindowInteropHelper(_window).Handle;
         _source = HwndSource.FromHwnd(_handle);
         _source?.AddHook(WndProc);
-        RegisterDefaults();
+        if (!RegisterDefaults())
+        {
+            RegistrationFailed?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private bool Register(RsttHotkey hotkey, Key key)

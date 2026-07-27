@@ -6,6 +6,8 @@ public interface IAudioCaptureService : IAsyncDisposable
 {
     bool IsCapturing { get; }
 
+    event EventHandler<AudioLevelEventArgs>? AudioLevelChanged;
+
     Task<IReadOnlyList<AudioDevice>> GetOutputDevicesAsync(CancellationToken cancellationToken = default);
 
     Task StartAsync(string? deviceId, CancellationToken cancellationToken = default);

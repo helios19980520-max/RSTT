@@ -24,13 +24,14 @@ public partial class App : System.Windows.Application
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         MainWindow = mainWindow;
         mainWindow.Show();
-        _ = InitializeAsync(_serviceProvider.GetRequiredService<MainViewModel>());
+        _ = InitializeAsync(_serviceProvider.GetRequiredService<MainViewModel>(), mainWindow);
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
         if (_serviceProvider is not null)
         {
+            await _serviceProvider.GetRequiredService<MainViewModel>().FlushSettingsAsync().ConfigureAwait(true);
             var coordinator = _serviceProvider.GetRequiredService<RecognitionCoordinator>();
             await coordinator.StopAsync().ConfigureAwait(true);
             await _serviceProvider.DisposeAsync().ConfigureAwait(true);
@@ -63,11 +64,15 @@ public partial class App : System.Windows.Application
         return services.BuildServiceProvider(validateScopes: true);
     }
 
-    private static async Task InitializeAsync(MainViewModel viewModel)
+    private static async Task InitializeAsync(MainViewModel viewModel, MainWindow mainWindow)
     {
         try
         {
             await viewModel.InitializeAsync();
+            if (viewModel.StartMinimized)
+            {
+                mainWindow.Hide();
+            }
         }
         catch (Exception exception)
         {

@@ -4,6 +4,7 @@ public enum ApplicationState
 {
     Initializing,
     ModelMissing,
+    ModelDownloading,
     ModelLoading,
     Ready,
     Listening,

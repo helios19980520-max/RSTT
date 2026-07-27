@@ -14,7 +14,8 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
     private OnlineRecognizer? _recognizer;
     private OnlineStream? _stream;
     private VoiceActivityDetector? _voiceActivityDetector;
-    private bool _speechWasActive;
+    private long _lastSequenceNumber;
+    private bool _streamHasAudio;
     private bool _isStarted;
     private bool _disposed;
 
@@ -42,13 +43,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
                 return;
             }
 
-            var installation = _modelManager.GetSelectedInstallation();
-            var config = BuildRecognizerConfig(installation);
-            _recognizer = new OnlineRecognizer(config);
-            _stream = _recognizer.CreateStream();
-            _voiceActivityDetector = CreateVoiceActivityDetector(installation);
-            ModelInformation = installation.Information;
-            LogModelLoaded(_logger, installation.Information.Id, installation.Engine);
+            await LoadModelUnsafeAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -56,16 +51,56 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         }
     }
 
-    public Task StartAsync(CancellationToken cancellationToken = default)
+    public async Task ReloadAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (!IsReady)
+        await _engineLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            throw new InvalidOperationException("The local speech model has not been initialized.");
+            _isStarted = false;
+            DisposeNativeUnsafe();
+            await LoadModelUnsafeAsync(cancellationToken).ConfigureAwait(false);
         }
+        finally
+        {
+            _engineLock.Release();
+        }
+    }
 
-        _isStarted = true;
-        return Task.CompletedTask;
+    public async Task UnloadAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await _engineLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _isStarted = false;
+            DisposeNativeUnsafe();
+            ModelInformation = _modelManager.GetSelectedModel();
+        }
+        finally
+        {
+            _engineLock.Release();
+        }
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await _engineLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_recognizer is null)
+            {
+                throw new InvalidOperationException("The local speech model has not been initialized.");
+            }
+
+            _stream ??= _recognizer.CreateStream();
+            _isStarted = true;
+        }
+        finally
+        {
+            _engineLock.Release();
+        }
     }
 
     public async Task ProcessAudioAsync(AudioChunk chunk, CancellationToken cancellationToken = default)
@@ -79,26 +114,16 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         await _engineLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var speechDetected = IsSpeechDetected(chunk.Samples);
+            _lastSequenceNumber = chunk.SequenceNumber;
             if (_voiceActivityDetector is not null)
             {
                 _voiceActivityDetector.AcceptWaveform(chunk.Samples);
-                speechDetected = _voiceActivityDetector.IsSpeechDetected();
             }
 
-            if (!speechDetected)
-            {
-                if (_speechWasActive)
-                {
-                    FlushAndResetUnsafe();
-                    _speechWasActive = false;
-                }
-
-                return;
-            }
-
-            _speechWasActive = true;
+            // Online models require the silence around speech for endpoint detection.
+            // Feeding every normalized chunk also preserves pre-roll before a VAD fires.
             _stream.AcceptWaveform(AudioChunk.SampleRate, chunk.Samples);
+            _streamHasAudio = true;
             while (_recognizer.IsReady(_stream))
             {
                 _recognizer.Decode(_stream);
@@ -114,6 +139,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
             if (isFinal)
             {
                 _recognizer.Reset(_stream);
+                _streamHasAudio = false;
             }
         }
         finally
@@ -133,7 +159,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         try
         {
             _isStarted = false;
-            FlushAndResetUnsafe();
+            FinalizeAndCreateFreshStreamUnsafe();
         }
         finally
         {
@@ -147,7 +173,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         await _engineLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            FlushAndResetUnsafe();
+            FinalizeAndCreateFreshStreamUnsafe();
         }
         finally
         {
@@ -167,12 +193,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         {
             _disposed = true;
             _isStarted = false;
-            _stream?.Dispose();
-            _stream = null;
-            _recognizer?.Dispose();
-            _recognizer = null;
-            _voiceActivityDetector?.Dispose();
-            _voiceActivityDetector = null;
+            DisposeNativeUnsafe();
         }
         finally
         {
@@ -214,7 +235,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
 
         return new OnlineRecognizerConfig
         {
-            FeatConfig = new FeatureConfig { SampleRate = AudioChunk.SampleRate, FeatureDim = 80 },
+            FeatConfig = new FeatureConfig { SampleRate = AudioChunk.SampleRate, FeatureDim = installation.FeatureDimension },
             ModelConfig = modelConfig,
             DecodingMethod = "greedy_search",
             MaxActivePaths = 4,
@@ -225,27 +246,79 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         };
     }
 
-    private void FlushAndResetUnsafe()
+    private async Task LoadModelUnsafeAsync(CancellationToken cancellationToken)
+    {
+        var installation = _modelManager.GetSelectedInstallation();
+        var resources = await Task.Run(
+            () =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var recognizer = new OnlineRecognizer(BuildRecognizerConfig(installation));
+                try
+                {
+                    var stream = recognizer.CreateStream();
+                    var vad = CreateVoiceActivityDetector(installation);
+                    return new EngineResources(recognizer, stream, vad);
+                }
+                catch
+                {
+                    recognizer.Dispose();
+                    throw;
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        _recognizer = resources.Recognizer;
+        _stream = resources.Stream;
+        _voiceActivityDetector = resources.VoiceActivityDetector;
+        _streamHasAudio = false;
+        _lastSequenceNumber = 0;
+        ModelInformation = installation.Information;
+        LogModelLoaded(_logger, installation.Information.Id, installation.Engine);
+    }
+
+    private void FinalizeAndCreateFreshStreamUnsafe()
     {
         if (_recognizer is null || _stream is null)
         {
             return;
         }
 
-        _stream.InputFinished();
-        while (_recognizer.IsReady(_stream))
+        if (_streamHasAudio)
         {
-            _recognizer.Decode(_stream);
+            _stream.InputFinished();
+            while (_recognizer.IsReady(_stream))
+            {
+                _recognizer.Decode(_stream);
+            }
+
+            var result = _recognizer.GetResult(_stream);
+            if (!string.IsNullOrWhiteSpace(result.Text))
+            {
+                RecognitionResultAvailable?.Invoke(
+                    this,
+                    new RecognitionResult(result.Text, true, _lastSequenceNumber, DateTimeOffset.UtcNow));
+            }
         }
 
-        var result = _recognizer.GetResult(_stream);
-        if (!string.IsNullOrWhiteSpace(result.Text))
-        {
-            RecognitionResultAvailable?.Invoke(this, new RecognitionResult(result.Text, true, 0, DateTimeOffset.UtcNow));
-        }
-
-        _recognizer.Reset(_stream);
+        // InputFinished is terminal for an OnlineStream. Dispose it and create a new
+        // stream instead of resetting and reusing the finalized native handle.
+        _stream.Dispose();
+        _stream = _recognizer.CreateStream();
+        _streamHasAudio = false;
         _voiceActivityDetector?.Reset();
+    }
+
+    private void DisposeNativeUnsafe()
+    {
+        _stream?.Dispose();
+        _stream = null;
+        _recognizer?.Dispose();
+        _recognizer = null;
+        _voiceActivityDetector?.Dispose();
+        _voiceActivityDetector = null;
+        _streamHasAudio = false;
+        _lastSequenceNumber = 0;
     }
 
     private static string RequiredFile(IReadOnlyDictionary<string, string> files, string name) =>
@@ -279,21 +352,10 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         return new VoiceActivityDetector(config, 30f);
     }
 
-    private static bool IsSpeechDetected(float[] samples)
-    {
-        if (samples.Length == 0)
-        {
-            return false;
-        }
-
-        double sum = 0;
-        foreach (var sample in samples)
-        {
-            sum += sample * sample;
-        }
-
-        return Math.Sqrt(sum / samples.Length) >= 0.008;
-    }
+    private sealed record EngineResources(
+        OnlineRecognizer Recognizer,
+        OnlineStream Stream,
+        VoiceActivityDetector? VoiceActivityDetector);
 
     [LoggerMessage(LogLevel.Information, "Loaded local sherpa-onnx model {ModelId} using {Engine}.")]
     private static partial void LogModelLoaded(ILogger logger, string modelId, string engine);

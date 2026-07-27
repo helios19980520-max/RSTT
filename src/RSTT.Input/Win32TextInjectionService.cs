@@ -22,6 +22,8 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         _logger = logger;
     }
 
+    internal static int NativeInputSize => Marshal.SizeOf<INPUT>();
+
     public async Task<TextInjectionResult> InjectTextAsync(string text, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -48,16 +50,36 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                 return new TextInjectionResult(false, "RSTT is focused, so text was not injected into its own window.");
             }
 
-            var inputs = CreateUnicodeInputs(text);
-            var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-            if (sent != (uint)inputs.Length)
+            var expectedInputCount = text.Length * 2;
+            var sentInputCount = 0u;
+            foreach (var character in text)
             {
-                var error = Marshal.GetLastWin32Error();
-                var message = error == 5
-                    ? "Text injection is unavailable for the elevated foreground application."
-                    : new Win32Exception(error).Message;
-                LogPartialSend(_logger, sent, inputs.Length, targetProcessId, message);
-                return new TextInjectionResult(false, message);
+                var currentTarget = GetForegroundWindow();
+                if (currentTarget == IntPtr.Zero ||
+                    GetWindowThreadProcessId(currentTarget, out var currentTargetProcessId) == 0 ||
+                    currentTargetProcessId != targetProcessId)
+                {
+                    const string message = "Text injection stopped because the foreground application changed.";
+                    LogPartialSend(_logger, sentInputCount, expectedInputCount, targetProcessId, message);
+                    return new TextInjectionResult(false, message);
+                }
+
+                var inputs = CreateUnicodeInputs(character);
+                var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+                sentInputCount += sent;
+                if (sent != (uint)inputs.Length)
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    var message = error == 5
+                        ? "Text injection is unavailable for the elevated foreground application."
+                        : new Win32Exception(error).Message;
+                    LogPartialSend(_logger, sentInputCount, expectedInputCount, targetProcessId, message);
+                    return new TextInjectionResult(false, message);
+                }
+
+                // Give WinUI text controls a chance to consume each VK_PACKET
+                // before the next Unicode pair reuses the native input buffer.
+                await Task.Delay(5, cancellationToken).ConfigureAwait(false);
             }
 
             LogInjectedText(_logger, text.Length, targetProcessId);
@@ -85,29 +107,20 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         _injectionLock.Dispose();
     }
 
-    private static INPUT[] CreateUnicodeInputs(string text)
-    {
-        var inputs = new INPUT[text.Length * 2];
-        for (var index = 0; index < text.Length; index++)
-        {
-            inputs[index * 2] = CreateInput(text[index], KeyEventFUnicode);
-            inputs[(index * 2) + 1] = CreateInput(text[index], KeyEventFUnicode | KeyEventFKeyUp);
-        }
-
-        return inputs;
-    }
+    private static INPUT[] CreateUnicodeInputs(char character) =>
+    [
+        CreateInput(character, KeyEventFUnicode),
+        CreateInput(character, KeyEventFUnicode | KeyEventFKeyUp),
+    ];
 
     private static INPUT CreateInput(char character, uint flags) => new()
     {
         Type = InputKeyboard,
-        Union = new InputUnion
+        Keyboard = new KEYBDINPUT
         {
-            Keyboard = new KEYBDINPUT
-            {
-                VirtualKey = 0,
-                ScanCode = character,
-                Flags = flags,
-            },
+            VirtualKey = 0,
+            ScanCode = character,
+            Flags = flags,
         },
     };
 
@@ -129,18 +142,23 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
     [LoggerMessage(LogLevel.Error, "Text injection failed.")]
     private static partial void LogInjectionFailure(ILogger logger, Exception exception);
 
-    [StructLayout(LayoutKind.Sequential)]
+    // RSTT publishes x64-only. INPUT's native anonymous union starts at byte 8
+    // and the complete structure is 40 bytes on x64. Expressing that layout
+    // directly also avoids array-marshalling ambiguity from a nested union.
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
     private struct INPUT
     {
-        public uint Type;
-        public InputUnion Union;
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    private struct InputUnion
-    {
         [FieldOffset(0)]
+        public uint Type;
+
+        [FieldOffset(8)]
         public KEYBDINPUT Keyboard;
+
+        [FieldOffset(8)]
+        public MOUSEINPUT Mouse;
+
+        [FieldOffset(8)]
+        public HARDWAREINPUT Hardware;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -151,5 +169,24 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         public uint Flags;
         public uint Time;
         public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HARDWAREINPUT
+    {
+        public uint Message;
+        public ushort ParameterLow;
+        public ushort ParameterHigh;
     }
 }

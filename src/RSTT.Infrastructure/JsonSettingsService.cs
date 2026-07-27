@@ -5,7 +5,7 @@ using RSTT.Core.Settings;
 
 namespace RSTT.Infrastructure;
 
-public sealed partial class JsonSettingsService : ISettingsService
+public sealed partial class JsonSettingsService : ISettingsService, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -15,6 +15,7 @@ public sealed partial class JsonSettingsService : ISettingsService
 
     private readonly IAppPaths _paths;
     private readonly ILogger<JsonSettingsService> _logger;
+    private readonly SemaphoreSlim _saveLock = new(1, 1);
 
     public JsonSettingsService(IAppPaths paths, ILogger<JsonSettingsService> logger)
     {
@@ -52,15 +53,25 @@ public sealed partial class JsonSettingsService : ISettingsService
 
     public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
-        _paths.EnsureDirectoriesExist();
-        var temporaryPath = _paths.SettingsFilePath + ".tmp";
-        await using (var stream = File.Create(temporaryPath))
+        await _saveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await JsonSerializer.SerializeAsync(stream, Current, SerializerOptions, cancellationToken).ConfigureAwait(false);
-        }
+            _paths.EnsureDirectoriesExist();
+            var temporaryPath = _paths.SettingsFilePath + ".tmp";
+            await using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None, 16 * 1024, true))
+            {
+                await JsonSerializer.SerializeAsync(stream, Current, SerializerOptions, cancellationToken).ConfigureAwait(false);
+            }
 
-        File.Move(temporaryPath, _paths.SettingsFilePath, true);
+            File.Move(temporaryPath, _paths.SettingsFilePath, true);
+        }
+        finally
+        {
+            _saveLock.Release();
+        }
     }
+
+    public void Dispose() => _saveLock.Dispose();
 
     [LoggerMessage(LogLevel.Warning, "Settings file is malformed. RSTT will use safe defaults.")]
     private static partial void LogMalformedSettings(ILogger logger, Exception exception);

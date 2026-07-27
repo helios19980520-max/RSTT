@@ -6,7 +6,7 @@ public sealed class AppSettings
 
     public string SpeechEngine { get; set; } = "SherpaOnnx";
 
-    public string SpeechModel { get; set; } = "FastEnglish";
+    public string SpeechModel { get; set; } = "ParakeetUnifiedEnInt8";
 
     public string Language { get; set; } = "en";
 
@@ -20,9 +20,17 @@ public sealed class AppSettings
 
     public bool AutoStartListening { get; set; }
 
+    public bool HasCompletedOnboarding { get; set; }
+
     public double CaptionFontSize { get; set; } = 28;
 
     public double CaptionOpacity { get; set; } = 0.9;
+
+    public double CaptionWidth { get; set; } = 900;
+
+    public bool CaptionAlwaysOnTop { get; set; } = true;
+
+    public bool CaptionShowStableTextOnly { get; set; }
 
     public string ToggleListeningHotkey { get; set; } = "Ctrl+Alt+R";
 
