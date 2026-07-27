@@ -1,0 +1,26 @@
+{
+  "id": "ParakeetUnifiedEnInt8",
+  "displayName": "Parakeet Unified English",
+  "engine": "online-transducer",
+  "files": {
+    "encoder": "encoder.int8.onnx",
+    "decoder": "decoder.int8.onnx",
+    "joiner": "joiner.int8.onnx",
+    "tokens": "tokens.txt"
+  },
+  "fileSizes": {
+    "encoder": 654046391,
+    "decoder": 7257777,
+    "joiner": 1735860,
+    "tokens": 8952
+  },
+  "sha256": {
+    "encoder": "1c03f1192de41771384af22972ca10203613ba56197a024f275b86727cd35911",
+    "decoder": "34fea72425d2506600772ba191a6d3f99c0710abdb68d9a3dc89fa8cb2aa473a",
+    "joiner": "869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a",
+    "tokens": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"
+  },
+  "numThreads": 4,
+  "provider": "cpu",
+  "featureDimension": 128
+}

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>false</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
+    <ProjectReference Include="..\RSTT.Audio\RSTT.Audio.csproj" />
+    <ProjectReference Include="..\RSTT.Speech\RSTT.Speech.csproj" />
+    <ProjectReference Include="..\RSTT.Input\RSTT.Input.csproj" />
+    <ProjectReference Include="..\RSTT.Infrastructure\RSTT.Infrastructure.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
+  </ItemGroup>
+</Project>
