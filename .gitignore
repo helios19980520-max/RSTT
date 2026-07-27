@@ -1,0 +1,10 @@
+[Bb]in/
+[Oo]bj/
+.vs/
+TestResults/
+*.user
+*.suo
+*.log
+*.swp
+*.swo
+artifacts/

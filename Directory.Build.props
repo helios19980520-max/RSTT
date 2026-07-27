@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <Authors>Helios</Authors>
+    <Company>Helios</Company>
+    <Product>RSTT</Product>
+    <Copyright>Copyright © Helios</Copyright>
+    <RepositoryUrl>https://github.com/helios19980520-max/RSTT</RepositoryUrl>
+  </PropertyGroup>
+</Project>

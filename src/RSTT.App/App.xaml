@@ -1,0 +1,15 @@
+<Application x:Class="RSTT.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <SolidColorBrush x:Key="WindowBackground" Color="#111827" />
+        <SolidColorBrush x:Key="PanelBackground" Color="#1F2937" />
+        <SolidColorBrush x:Key="MutedText" Color="#9CA3AF" />
+        <SolidColorBrush x:Key="Accent" Color="#38BDF8" />
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="16,9" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+    </Application.Resources>
+</Application>

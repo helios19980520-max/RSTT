@@ -1,0 +1,15 @@
+<Window x:Class="RSTT.App.CaptionOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="900" MinHeight="92" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False"
+        AllowsTransparency="True" Background="Transparent" Topmost="True"
+        ShowActivated="False" Focusable="False" WindowStartupLocation="Manual"
+        Left="510" Top="820">
+    <Border Margin="24" Padding="22,12" Background="#DD111827" CornerRadius="12" MaxWidth="850">
+        <TextBlock FontSize="28" TextWrapping="Wrap" TextAlignment="Center" Foreground="White">
+            <Run Text="{Binding PreviewStableText, Mode=OneWay}" />
+            <Run Text="{Binding PreviewPendingText, Mode=OneWay}" Foreground="#B0FFFFFF" />
+        </TextBlock>
+    </Border>
+</Window>
