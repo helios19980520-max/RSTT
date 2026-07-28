@@ -1,35 +1,31 @@
 using Microsoft.Extensions.Logging;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Models;
-using RSTT.Core.Workers;
 
 namespace RSTT.Speech;
 
-/// <summary>
-/// Runs Whisper and Silero VAD together inside one isolated CPU or CUDA worker.
-/// Only final VAD-segment hypotheses leave the worker.
-/// </summary>
-public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
+public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognitionEngine
 {
     private readonly IModelManager _models;
     private readonly ISettingsService _settings;
     private readonly IComputeDeviceService _compute;
     private readonly IPerformanceMonitor _performance;
-    private readonly ILogger<WhisperCppEngine> _logger;
+    private readonly ILogger _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private WhisperWorkerClient? _worker;
+    private SherpaWorkerClient? _client;
     private SessionGenerationId _generation;
+    private string _language = "auto";
     private bool _workerSessionStarted;
     private bool _started;
     private bool _cudaActive;
     private bool _disposed;
 
-    public WhisperCppEngine(
+    protected SherpaWorkerRecognitionEngine(
         IModelManager models,
         ISettingsService settings,
         IComputeDeviceService compute,
         IPerformanceMonitor performance,
-        ILogger<WhisperCppEngine> logger)
+        ILogger logger)
     {
         _models = models;
         _settings = settings;
@@ -39,7 +35,7 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
         ModelInformation = models.GetSelectedModel();
     }
 
-    public bool IsReady => _worker is not null;
+    public bool IsReady => _client is not null;
 
     public ModelInformation ModelInformation { get; private set; }
 
@@ -47,11 +43,11 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfDisposed();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_worker is null)
+            if (_client is null)
             {
                 await LoadUnsafeAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -64,11 +60,11 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
 
     public async Task ReloadAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfDisposed();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await DisposeWorkerUnsafeAsync().ConfigureAwait(false);
+            await DisposeClientUnsafeAsync().ConfigureAwait(false);
             await LoadUnsafeAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -79,10 +75,12 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
 
     public async Task UnloadAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await DisposeWorkerUnsafeAsync().ConfigureAwait(false);
+            await DisposeClientUnsafeAsync().ConfigureAwait(false);
+            ModelInformation = _models.GetSelectedModel();
         }
         finally
         {
@@ -93,9 +91,10 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_worker is null)
+        ThrowIfDisposed();
+        if (_client is null)
         {
-            throw new InvalidOperationException("The Whisper worker is not initialized.");
+            throw new InvalidOperationException("The sherpa worker is not initialized.");
         }
 
         _started = true;
@@ -106,7 +105,8 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
         AudioChunk chunk,
         CancellationToken cancellationToken = default)
     {
-        if (!_started || _worker is null || chunk.Samples.Length == 0)
+        ThrowIfDisposed();
+        if (!_started || _client is null || chunk.Samples.Length == 0)
         {
             return;
         }
@@ -117,8 +117,8 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
             if (!_workerSessionStarted)
             {
                 _generation = chunk.SessionGenerationId;
-                await _worker
-                    .StartSessionAsync(_generation.Value, chunk.SequenceNumber, cancellationToken)
+                await _client
+                    .StartSessionAsync(_generation, chunk.SequenceNumber, cancellationToken)
                     .ConfigureAwait(false);
                 _workerSessionStarted = true;
             }
@@ -127,7 +127,7 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                 return;
             }
 
-            var result = await _worker
+            var result = await _client
                 .ProcessAudioAsync(chunk, cancellationToken)
                 .ConfigureAwait(false);
             PublishBatch(result);
@@ -140,6 +140,11 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -154,6 +159,7 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
 
     public async Task ResetAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -176,7 +182,9 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
         try
         {
             _disposed = true;
-            await DisposeWorkerUnsafeAsync().ConfigureAwait(false);
+            _started = false;
+            await DisposeClientUnsafeAsync().ConfigureAwait(false);
+            GC.SuppressFinalize(this);
         }
         finally
         {
@@ -188,32 +196,20 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
     private async Task LoadUnsafeAsync(CancellationToken cancellationToken)
     {
         var installation = _models.GetSelectedInstallation();
-        var descriptor = installation.Descriptor
-            ?? throw new InvalidOperationException("The Whisper model descriptor is missing.");
-        if (!descriptor.Engine.Equals("whisper-cpp", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                $"{descriptor.DisplayName} is not a whisper.cpp model.");
-        }
-
-        var language = string.IsNullOrWhiteSpace(_settings.Current.DefaultLanguage)
-            ? "auto"
-            : _settings.Current.DefaultLanguage;
+        var descriptor = installation.Descriptor ??
+            throw new InvalidOperationException("The selected model descriptor is missing.");
+        _language = ResolveLanguage(descriptor, _settings.Current.DefaultLanguage);
         var requested = _settings.Current.DefaultBackend;
-        var candidates = requested switch
-        {
-            ComputeBackend.Cpu => new[] { ComputeBackend.Cpu },
-            ComputeBackend.Cuda => new[] { ComputeBackend.Cuda },
-            _ => new[] { ComputeBackend.Cuda, ComputeBackend.Cpu },
-        };
-        Exception? lastFailure = null;
+        var candidates = ResolveCandidates(requested, descriptor);
+        Exception? cudaFailure = null;
         _compute.ResetRuntimeEvidence();
+
         foreach (var backend in candidates)
         {
-            WhisperWorkerClient? candidate = null;
+            SherpaWorkerClient? candidate = null;
             try
             {
-                candidate = await WhisperWorkerClient
+                candidate = await SherpaWorkerClient
                     .StartAsync(backend, cancellationToken)
                     .ConfigureAwait(false);
                 if (backend == ComputeBackend.Cuda)
@@ -221,103 +217,103 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                     Report(
                         ComputeReadinessLayer.ProviderLoad,
                         ComputeLayerState.Ready,
-                        $"Whisper CUDA worker handshake passed ({candidate.Handshake.RuntimeVersion}).",
+                        $"CUDA worker handshake passed ({candidate.Handshake.RuntimeVersion}).",
                         descriptor.Id,
                         candidate.Handshake.RuntimeVersion);
                 }
 
-                var policy = descriptor.VadPolicy ?? new VadSegmentationPolicy();
-                await candidate.LoadAsync(
-                        RequiredFile(installation.Files, "model"),
-                        RequiredFile(installation.Files, "vad"),
-                        language,
-                        installation.NumThreads,
-                        new WorkerVadPolicy(
-                            policy.PreRollMs,
-                            policy.PostRollMs,
-                            policy.MaximumSegmentMs,
-                            policy.Threshold),
-                        cancellationToken)
+                installation = installation with
+                {
+                    Provider = backend == ComputeBackend.Cuda ? "cuda" : "cpu",
+                    NumThreads = ResolveThreadCount(installation, backend),
+                };
+                _ = await candidate
+                    .LoadAsync(installation, _language, cancellationToken)
                     .ConfigureAwait(false);
                 if (backend == ComputeBackend.Cuda)
                 {
                     Report(
                         ComputeReadinessLayer.RecognizerLoad,
                         ComputeLayerState.Ready,
-                        $"{descriptor.DisplayName} loaded in the Whisper CUDA worker.",
+                        $"{descriptor.DisplayName} loaded in the CUDA worker.",
                         descriptor.Id,
                         candidate.Handshake.RuntimeVersion);
                 }
 
-                await candidate.WarmupAsync(cancellationToken).ConfigureAwait(false);
+                var warmup = await candidate
+                    .WarmupAsync(cancellationToken)
+                    .ConfigureAwait(false);
                 if (backend == ComputeBackend.Cuda)
                 {
                     Report(
                         ComputeReadinessLayer.Warmup,
                         ComputeLayerState.Ready,
-                        "Whisper CUDA warmup decode passed.",
+                        $"CUDA warmup decode passed in {warmup.Performance?.DecodeMilliseconds:N1} ms.",
                         descriptor.Id,
                         candidate.Handshake.RuntimeVersion);
                     Report(
                         ComputeReadinessLayer.ActiveInference,
                         ComputeLayerState.NotTested,
-                        "Warmup passed; awaiting active-session speech decode.",
+                        "Warmup passed; awaiting active-session audio decode.",
                         descriptor.Id,
                         candidate.Handshake.RuntimeVersion);
                 }
 
-                _worker = candidate;
+                _client = candidate;
                 candidate = null;
-                break;
+                ModelInformation = installation.Information;
+                _workerSessionStarted = false;
+                _cudaActive = false;
+                _performance.SetSessionContext(
+                    backend == ComputeBackend.Cuda ? "cuda-ready" : "cpu",
+                    descriptor.Id,
+                    string.Empty);
+                LogWorkerLoaded(
+                    _logger,
+                    descriptor.Id,
+                    backend.ToString(),
+                    _client.Handshake.RuntimeVersion);
+                return;
             }
             catch (Exception exception) when (
-                requested == ComputeBackend.Auto &&
-                backend == ComputeBackend.Cuda)
+                backend == ComputeBackend.Cuda &&
+                requested == ComputeBackend.Auto)
             {
-                lastFailure = exception;
+                cudaFailure = exception;
+                Report(
+                    ComputeReadinessLayer.ProviderLoad,
+                    ComputeLayerState.Failed,
+                    $"CUDA worker failed; CPU fallback selected: {exception.Message}",
+                    descriptor.Id);
+                if (candidate is not null)
+                {
+                    await candidate.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            catch
+            {
                 if (candidate is not null)
                 {
                     await candidate.DisposeAsync().ConfigureAwait(false);
                 }
 
-                Report(
-                    ComputeReadinessLayer.ProviderLoad,
-                    ComputeLayerState.Failed,
-                    $"Whisper CUDA verification failed; CPU fallback selected: {exception.Message}",
-                    descriptor.Id);
-                LogCudaFallback(_logger, exception.Message);
+                throw;
             }
         }
 
-        if (_worker is null)
-        {
-            throw new InvalidOperationException(
-                $"No Whisper worker could be started. {lastFailure?.Message}",
-                lastFailure);
-        }
-
-        ModelInformation = installation.Information;
-        _workerSessionStarted = false;
-        _cudaActive = false;
-        _performance.SetSessionContext(
-            _worker.Backend == ComputeBackend.Cuda ? "cuda-ready" : "cpu",
-            descriptor.Id,
-            _worker.Handshake.RuntimeVersion);
-        LogWhisperLoaded(
-            _logger,
-            descriptor.Id,
-            _worker.Backend.ToString(),
-            _worker.Handshake.RuntimeVersion);
+        throw new InvalidOperationException(
+            "No speech worker could be started.",
+            cudaFailure);
     }
 
     private async Task FinishSessionUnsafeAsync(CancellationToken cancellationToken)
     {
-        if (!_workerSessionStarted || _worker is null)
+        if (!_workerSessionStarted || _client is null)
         {
             return;
         }
 
-        var result = await _worker.FinishAsync(cancellationToken).ConfigureAwait(false);
+        var result = await _client.FinishAsync(cancellationToken).ConfigureAwait(false);
         _workerSessionStarted = false;
         PublishBatch(result);
     }
@@ -330,19 +326,19 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
             _performance.RecordDecode(
                 TimeSpan.FromMilliseconds(performance.DecodeMilliseconds),
                 performance.AudioMilliseconds);
-            if (!_cudaActive && _worker?.Backend == ComputeBackend.Cuda)
+            if (!_cudaActive && _client?.Backend == ComputeBackend.Cuda)
             {
                 _cudaActive = true;
                 _performance.SetSessionContext(
                     "cuda",
                     ModelInformation.Id,
-                    _worker.Handshake.RuntimeVersion);
+                    string.Empty);
                 Report(
                     ComputeReadinessLayer.ActiveInference,
                     ComputeLayerState.Active,
-                    $"CUDA Active: Whisper decoded a speech segment in {performance.DecodeMilliseconds:N1} ms.",
+                    $"CUDA Active: session audio decoded in {performance.DecodeMilliseconds:N1} ms.",
                     ModelInformation.Id,
-                    _worker.Handshake.RuntimeVersion);
+                    _client.Handshake.RuntimeVersion);
             }
         }
 
@@ -360,23 +356,22 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                     new SessionGenerationId(hypothesis.SessionGenerationId),
                     hypothesis.SequenceId,
                     hypothesis.Text,
-                    true,
+                    hypothesis.IsFinal,
                     DateTimeOffset.UtcNow,
                     hypothesis.Language,
-                    ModelInformation.Id,
-                    hypothesis.Confidence));
+                    ModelInformation.Id));
         }
     }
 
-    private async Task DisposeWorkerUnsafeAsync()
+    private async Task DisposeClientUnsafeAsync()
     {
         _started = false;
         _workerSessionStarted = false;
         _cudaActive = false;
-        if (_worker is not null)
+        if (_client is not null)
         {
-            await _worker.DisposeAsync().ConfigureAwait(false);
-            _worker = null;
+            await _client.DisposeAsync().ConfigureAwait(false);
+            _client = null;
         }
     }
 
@@ -395,25 +390,74 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                 modelId,
                 runtimeVersion));
 
-    private static string RequiredFile(
-        IReadOnlyDictionary<string, string> files,
-        string key) =>
-        files.TryGetValue(key, out var path) && !string.IsNullOrWhiteSpace(path)
-            ? path
-            : throw new InvalidOperationException(
-                $"The selected Whisper model is missing its required '{key}' artifact.");
+    private int ResolveThreadCount(
+        ModelInstallation installation,
+        ComputeBackend backend)
+    {
+        if (backend == ComputeBackend.Cuda)
+        {
+            return Math.Clamp(installation.NumThreads, 1, 4);
+        }
+
+        if (_settings.Current.CpuThreadLimit > 0)
+        {
+            return Math.Clamp(
+                _settings.Current.CpuThreadLimit,
+                1,
+                Math.Min(8, Environment.ProcessorCount));
+        }
+
+        return Math.Clamp(
+            installation.NumThreads,
+            1,
+            Math.Min(4, Environment.ProcessorCount));
+    }
+
+    private static IReadOnlyList<ComputeBackend> ResolveCandidates(
+        ComputeBackend requested,
+        ModelDescriptor descriptor) =>
+        requested switch
+        {
+            ComputeBackend.Cpu => [ComputeBackend.Cpu],
+            ComputeBackend.Cuda when !descriptor.CudaSupported =>
+                throw new InvalidOperationException(
+                    $"{descriptor.DisplayName} does not support CUDA."),
+            ComputeBackend.Cuda => [ComputeBackend.Cuda],
+            _ when descriptor.CudaSupported =>
+                [ComputeBackend.Cuda, ComputeBackend.Cpu],
+            _ => [ComputeBackend.Cpu],
+        };
+
+    private static string ResolveLanguage(
+        ModelDescriptor descriptor,
+        string configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return "auto";
+        }
+
+        if (configured.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return descriptor.Capabilities.SupportsLanguageDetection
+                ? "auto"
+                : descriptor.Languages.Count > 0
+                    ? descriptor.Languages[0]
+                    : "en";
+        }
+
+        return configured.Trim();
+    }
+
+    private void ThrowIfDisposed() =>
+        ObjectDisposedException.ThrowIf(_disposed, this);
 
     [LoggerMessage(
         LogLevel.Information,
-        "Loaded Whisper model {ModelId} in isolated {Backend} worker using {RuntimeVersion}.")]
-    private static partial void LogWhisperLoaded(
+        "Loaded {ModelId} in isolated {Backend} sherpa worker {RuntimeVersion}.")]
+    private static partial void LogWorkerLoaded(
         ILogger logger,
         string modelId,
         string backend,
         string runtimeVersion);
-
-    [LoggerMessage(
-        LogLevel.Warning,
-        "Whisper CUDA worker failed verification and was terminated before CPU fallback: {Reason}")]
-    private static partial void LogCudaFallback(ILogger logger, string reason);
 }

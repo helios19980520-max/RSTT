@@ -10,5 +10,6 @@
     <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
     <PackageReference Include="Whisper.net" />
     <PackageReference Include="Whisper.net.Runtime" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" />
   </ItemGroup>
 </Project>

@@ -50,6 +50,34 @@ public sealed class RecognitionCoordinatorLifecycleTests
         Assert.Equal(TranscriptionSessionState.Stopped, coordinator.SessionState);
     }
 
+    [Fact]
+    public async Task DiagnosticsSelfTestUsesBalancedFramesAndTerminalResult()
+    {
+        var events = new ConcurrentQueue<string>();
+        var engine = new FakeEngine(events);
+        await using var coordinator = new RecognitionCoordinator(
+            new FakeCapture(events),
+            engine,
+            new FakeInjection(events),
+            new FakeSettings(),
+            new ApplicationStateService(),
+            new TranscriptStabilizer(
+                new TextFormattingPolicy(),
+                new FinalOnlyCommitPolicy()),
+            new CaptionHistory(),
+            NullPerformanceMonitor.Instance,
+            NullLogger<RecognitionCoordinator>.Instance);
+
+        var finalResults = await coordinator.RunSpeechSelfTestAsync(
+            new float[AudioChunk.SampleRate * 11]);
+
+        Assert.Equal(1, finalResults);
+        var sampleCounts = engine.SampleCounts.ToArray();
+        Assert.Equal(20, sampleCounts.Length);
+        Assert.All(sampleCounts[..^1], count => Assert.Equal(8_960, count));
+        Assert.Equal(5_760, sampleCounts[^1]);
+    }
+
     private static void AssertBefore(string[] actual, string first, string second)
     {
         var firstIndex = Array.IndexOf(actual, first);
@@ -127,6 +155,8 @@ public sealed class RecognitionCoordinatorLifecycleTests
 
         public bool IsReady => true;
 
+        public ConcurrentQueue<int> SampleCounts { get; } = new();
+
         public ModelInformation ModelInformation { get; } =
             new("fake", "Fake", "", true);
 
@@ -150,6 +180,7 @@ public sealed class RecognitionCoordinatorLifecycleTests
         {
             _generation = chunk.SessionGenerationId;
             _events.Enqueue($"audio:{chunk.SequenceNumber}");
+            SampleCounts.Enqueue(chunk.Samples.Length);
             return Task.CompletedTask;
         }
 

@@ -39,7 +39,17 @@ public sealed record WorkerLoadRequest(
     string ModelPath,
     string Language,
     int Threads,
-    bool Translate = false);
+    bool Translate = false,
+    string Engine = "",
+    int FeatureDimension = 80,
+    IReadOnlyDictionary<string, string>? Files = null,
+    WorkerVadPolicy? VadPolicy = null);
+
+public sealed record WorkerVadPolicy(
+    int PreRollMs = 200,
+    int PostRollMs = 500,
+    int MaximumSegmentMs = 20_000,
+    float Threshold = 0.5f);
 
 public sealed record WorkerStartRequest(long SessionGenerationId, long SequenceId);
 
@@ -56,7 +66,9 @@ public sealed record WorkerHypothesisResponse(
 public sealed record WorkerPerformanceResponse(
     double AudioMilliseconds,
     double DecodeMilliseconds,
-    long WorkingSetBytes);
+    long WorkingSetBytes,
+    double DecodedAudioMilliseconds = 0,
+    int SegmentCount = 0);
 
 public sealed record WorkerFaultResponse(
     string Stage,

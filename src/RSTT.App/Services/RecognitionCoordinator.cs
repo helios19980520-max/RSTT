@@ -287,6 +287,108 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         }
     }
 
+    public async Task<int> RunSpeechSelfTestAsync(
+        ReadOnlyMemory<float> samples,
+        CancellationToken cancellationToken = default)
+    {
+        if (samples.IsEmpty)
+        {
+            throw new ArgumentException(
+                "Self-test audio cannot be empty.",
+                nameof(samples));
+        }
+
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        EventHandler<RecognitionHypothesis>? handler = null;
+        var started = false;
+        var finalResults = 0;
+        try
+        {
+            if (IsListening || _audioWorker is not null)
+            {
+                throw new InvalidOperationException(
+                    "Diagnostics cannot run while a live session is active.");
+            }
+
+            if (!_speechEngine.IsReady)
+            {
+                throw new InvalidOperationException(
+                    "The selected speech engine is not ready.");
+            }
+
+            var generation = new SessionGenerationId(
+                Interlocked.Increment(ref _generation));
+            handler = (_, hypothesis) =>
+            {
+                if (hypothesis.SessionGenerationId == generation &&
+                    hypothesis.IsFinal &&
+                    !string.IsNullOrWhiteSpace(hypothesis.Text))
+                {
+                    Interlocked.Increment(ref finalResults);
+                }
+            };
+            _speechEngine.RecognitionResultAvailable += handler;
+            LogSelfTestStage(_logger, "reset");
+            await _speechEngine.ResetAsync(cancellationToken).ConfigureAwait(false);
+            LogSelfTestStage(_logger, "start");
+            await _speechEngine.StartAsync(cancellationToken).ConfigureAwait(false);
+            started = true;
+
+            // Use the balanced native-streaming frame size for diagnostics.
+            // A 100 ms request cadence forces needless decode/control
+            // round-trips and can make the bundled 11-second sample exceed
+            // the self-test timeout on otherwise healthy workers.
+            const int frameSamples = AudioChunk.SampleRate * 560 / 1_000;
+            var frameCount = (samples.Length + frameSamples - 1) / frameSamples;
+            long sequence = 0;
+            for (var offset = 0; offset < samples.Length; offset += frameSamples)
+            {
+                var count = Math.Min(frameSamples, samples.Length - offset);
+                LogSelfTestStage(
+                    _logger,
+                    $"audio frame {sequence + 1}/{frameCount}");
+                await _speechEngine.ProcessAudioAsync(
+                        new AudioChunk(
+                            ++sequence,
+                            DateTimeOffset.UtcNow,
+                            samples.Slice(offset, count).ToArray(),
+                            generation),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            LogSelfTestStage(_logger, "finish");
+            await _speechEngine.StopAsync(cancellationToken).ConfigureAwait(false);
+            started = false;
+            LogSelfTestStage(_logger, "complete");
+            return Volatile.Read(ref finalResults);
+        }
+        finally
+        {
+            if (handler is not null)
+            {
+                _speechEngine.RecognitionResultAvailable -= handler;
+            }
+
+            if (started)
+            {
+                try
+                {
+                    using var cleanupTimeout =
+                        new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await _speechEngine.StopAsync(cleanupTimeout.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    LogSelfTestCleanupFailed(_logger, exception);
+                }
+            }
+
+            _lifecycleLock.Release();
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -935,6 +1037,14 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private static partial void LogEngineInitializationFailed(
         ILogger logger,
         Exception exception);
+
+    [LoggerMessage(LogLevel.Warning, "Speech self-test cleanup failed.")]
+    private static partial void LogSelfTestCleanupFailed(
+        ILogger logger,
+        Exception exception);
+
+    [LoggerMessage(LogLevel.Information, "Speech self-test entered stage {Stage}.")]
+    private static partial void LogSelfTestStage(ILogger logger, string stage);
 
     [LoggerMessage(LogLevel.Error, "Failed to start the audio recognition pipeline.")]
     private static partial void LogPipelineStartFailed(

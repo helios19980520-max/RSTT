@@ -2,12 +2,14 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Data;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
+using NAudio.Wave;
 using RSTT.App.Infrastructure;
 using RSTT.App.Services;
 using RSTT.Core.Abstractions;
@@ -29,7 +31,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly CaptionHistory _captionHistory;
     private readonly IPerformanceMonitor _performance;
     private readonly IComputeDeviceService _computeDevices;
-    private readonly ISpeechEngineFactory _speechEngineFactory;
     private readonly ILogger<MainViewModel> _logger;
     private readonly DispatcherTimer _telemetryTimer;
     private CancellationTokenSource? _modelDownloadCancellation;
@@ -97,7 +98,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CaptionHistory captionHistory,
         IPerformanceMonitor performance,
         IComputeDeviceService computeDevices,
-        ISpeechEngineFactory speechEngineFactory,
         ILogger<MainViewModel> logger)
     {
         _coordinator = coordinator;
@@ -109,7 +109,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _captionHistory = captionHistory;
         _performance = performance;
         _computeDevices = computeDevices;
-        _speechEngineFactory = speechEngineFactory;
         _logger = logger;
         _telemetryTimer = new DispatcherTimer(
             TimeSpan.FromSeconds(1),
@@ -1152,18 +1151,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             var model = ActiveModel ?? SelectedModel;
-            var compute = await _computeDevices
-                .GetDiagnosticsAsync(
-                    ComputeBackend,
-                    model?.Descriptor)
-                .ConfigureAwait(true);
             var devices = await _audioCapture.GetOutputDevicesAsync().ConfigureAwait(true);
-            var performance = _performance.GetSnapshot();
             var modelValid = _modelManager.TryValidateModel(out var validatedModel);
             var selfTest = await RunSpeechSelfTestAsync(
                     model?.Descriptor,
                     modelValid)
                 .ConfigureAwait(true);
+            // Fetch the report after the isolated decode so provider, recognizer,
+            // warmup, fallback, and active-inference evidence is visible immediately.
+            var compute = await _computeDevices
+                .GetDiagnosticsAsync(
+                    ComputeBackend,
+                    model?.Descriptor)
+                .ConfigureAwait(true);
+            var performance = _performance.GetSnapshot();
             var builder = new StringBuilder();
             ComputeDiagnostics.Clear();
             foreach (var layer in compute.Layers)
@@ -1222,6 +1223,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             builder.AppendLine();
             builder.AppendLine("Transcript content: excluded");
             DiagnosticsText = builder.ToString();
+            LogDiagnosticsCompleted(
+                _logger,
+                ActiveRuntimeLabel,
+                performance.Provider,
+                selfTest.StartsWith("Ready.", StringComparison.Ordinal),
+                transcriptExcluded: true);
             ActionMessage = "Diagnostics self-test completed without including transcript content.";
         }
         finally
@@ -1244,45 +1251,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return "Not tested because the selected model installation is not valid.";
         }
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-        var generation = new SessionGenerationId(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        var finalResults = 0;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         try
         {
-            await using var engine = _speechEngineFactory.Create(descriptor);
-            engine.RecognitionResultAvailable += OnSelfTestResult;
-            await engine.InitializeAsync(timeout.Token).ConfigureAwait(true);
-            await engine.StartAsync(timeout.Token).ConfigureAwait(true);
-            await engine.ProcessAudioAsync(
-                    new AudioChunk(
-                        1,
-                        DateTimeOffset.UtcNow,
-                        new float[AudioChunk.SampleRate],
-                        generation),
-                    timeout.Token)
+            var samples = ReadSelfTestAudio();
+            var finalResults = await _coordinator
+                .RunSpeechSelfTestAsync(samples, timeout.Token)
                 .ConfigureAwait(true);
-            await engine.StopAsync(timeout.Token).ConfigureAwait(true);
-            engine.RecognitionResultAvailable -= OnSelfTestResult;
-            return descriptor.Engine == "whisper-cpp"
-                ? $"Ready. Isolated worker handshake, model load, warmup, and decode completed; {finalResults} final result(s) from silent test audio."
-                : $"Ready. Recognizer load and stop/finalization lifecycle completed; {finalResults} final result(s) from silent test audio.";
+            return finalResults > 0
+                ? $"Ready. Isolated worker handshake, model load, warmup, and licensed-audio decode completed; {finalResults} final result(s)."
+                : "Failed: the worker completed without a final transcription result.";
         }
         catch (OperationCanceledException)
         {
-            return "Failed: the isolated self-test exceeded 45 seconds.";
+            return "Failed: the isolated self-test exceeded two minutes.";
         }
         catch (Exception exception)
         {
             return $"Failed: {exception.Message}";
         }
+    }
 
-        void OnSelfTestResult(object? sender, RecognitionHypothesis hypothesis)
+    private static float[] ReadSelfTestAudio()
+    {
+        var path = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "Audio",
+            "jfk.wav");
+        if (!File.Exists(path))
         {
-            if (hypothesis.IsFinal)
-            {
-                finalResults++;
-            }
+            throw new FileNotFoundException(
+                "The licensed diagnostics audio asset is missing.",
+                path);
         }
+
+        using var reader = new WaveFileReader(path);
+        if (reader.WaveFormat.SampleRate != AudioChunk.SampleRate ||
+            reader.WaveFormat.Channels != 1)
+        {
+            throw new InvalidDataException(
+                $"Diagnostics audio must be 16 kHz mono; detected {reader.WaveFormat}.");
+        }
+
+        var provider = reader.ToSampleProvider();
+        var samples = new List<float>(
+            checked((int)(reader.Length / Math.Max(1, reader.BlockAlign))));
+        var buffer = new float[AudioChunk.SampleRate];
+        int read;
+        while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            samples.AddRange(buffer.AsSpan(0, read).ToArray());
+        }
+
+        return samples.ToArray();
     }
 
     private void CopyDiagnostics()
@@ -1930,6 +1952,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [LoggerMessage(LogLevel.Warning, "Output device enumeration failed.")]
     private static partial void LogAudioDeviceEnumerationFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        LogLevel.Information,
+        "Diagnostics completed: runtime={Runtime}, provider={Provider}, self-test ready={SelfTestReady}, transcript excluded={TranscriptExcluded}.")]
+    private static partial void LogDiagnosticsCompleted(
+        ILogger logger,
+        string runtime,
+        string provider,
+        bool selfTestReady,
+        bool transcriptExcluded);
 
     [LoggerMessage(LogLevel.Warning, "Settings could not be saved.")]
     private static partial void LogSettingsSaveFailed(ILogger logger, Exception exception);

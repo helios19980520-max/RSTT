@@ -9,7 +9,8 @@ Windows render endpoint
   → bounded raw-packet channel (32)
   → downmix + direct incremental resample to 16 kHz mono
   → bounded normalized-audio channel (48)
-  → input-driven sherpa-onnx engine
+  → versioned named-pipe protocol
+  → exactly one isolated sherpa or whisper.cpp CPU/CUDA worker
   → bounded ordered result channel (128)
   ├─ model-aware ITranscriptCommitPolicy + CaptionHistory
   │    → typed snapshot and zero-or-more TranscriptCommit values
@@ -26,16 +27,18 @@ Windows render endpoint
 | --- | --- |
 | `RSTT.Core` | Contracts, settings, model/compute metadata, state machine, transcript policies, caption history |
 | `RSTT.Audio` | Device enumeration, WASAPI capture, pooled packet transport, conversion, metering |
-| `RSTT.Speech` | Embedded catalog, managed download/install lifecycle, sherpa-onnx resources |
+| `RSTT.Speech` | Embedded catalog, model lifecycle, descriptor factory, worker clients |
+| `RSTT.Sherpa.Worker` | Versioned isolated sherpa-onnx CPU worker |
+| `RSTT.Sherpa.Cuda12.Worker` | Optional isolated sherpa CUDA 12/cuDNN 9 worker |
 | `RSTT.Whisper.Worker` | Versioned isolated whisper.cpp CPU worker |
 | `RSTT.Whisper.Cuda12.Worker` | Optional isolated whisper.cpp CUDA 12 worker |
 | `RSTT.Input` | Foreground safety and Win32 Unicode `SendInput` |
 | `RSTT.Infrastructure` | App paths, atomic settings, compute probes, performance monitor, rolling logs |
 | `RSTT.App` | WPF shell, view model, coordinator, caption window, tray, and hotkeys |
 
-Core is UI-independent. Sherpa native lifetime currently remains inside Speech.
-Whisper native state exists only in its selected worker process. WPF objects
-remain inside App.
+Core is UI-independent. Sherpa and Whisper native state exists only in the
+selected worker process. CPU and CUDA binaries are side by side and never load
+into the WPF process. WPF objects remain inside App.
 
 ## Callback and backpressure rules
 
@@ -43,13 +46,19 @@ The WASAPI callback may copy the incoming packet into an `ArrayPool<byte>` buffe
 
 One worker owns downmix/resample/RMS work. The meter is capped at 25 Hz. When a bounded stage cannot accept more input, RSTT drops bounded work and records duration/age rather than growing latency and memory indefinitely.
 
-The ASR worker naturally sleeps in `await foreach` while no normalized chunks exist. `IsReady`/`Decode` loops run only after genuinely new audio is accepted or during one deliberate endpoint flush.
+The coordinator sleeps while no normalized chunks exist, and the native worker
+blocks on its named pipe. `IsReady`/`Decode` loops run only after genuinely new
+audio is accepted or during one deliberate endpoint flush.
 
 ## Recognition cadence and model profiles
 
 `StreamingRecognitionProfile` records chunk/lookahead/expected latency, cache-aware versus buffered behavior, and recommended threads. The recommended 560 ms Nemotron profile is cache-aware. Parakeet's 1120 ms profile is buffered and materially more CPU-intensive on the test machine.
 
-The engine accepts normalized audio incrementally and asks sherpa-onnx to decode only while the stream reports work ready. Decode time and the audio duration credited since the previous decode are recorded. RTF is the rolling ratio of decoder time to input-audio time, including terminal flush work.
+The worker accepts normalized audio incrementally and asks the selected runtime
+to decode only while work is ready. Online sherpa endpointing remains internal.
+Offline sherpa and Whisper use Silero VAD in the same worker with strictly
+bounded 200/500 ms context and a 20-second maximum segment. Decode time and
+credited audio duration are returned as typed performance messages.
 
 ## Session lifecycle
 

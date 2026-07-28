@@ -4,14 +4,12 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
-    <AssemblyName>RSTT.Whisper.Cuda12.Worker</AssemblyName>
-    <DefineConstants>$(DefineConstants);WHISPER_CUDA12</DefineConstants>
+    <AssemblyName>RSTT.Speech.Worker</AssemblyName>
+    <DefineConstants>$(DefineConstants);SHERPA_CUDA12</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\RSTT.Whisper.Worker\Program.cs" Link="Program.cs" />
+    <Compile Include="..\RSTT.Sherpa.Worker\Program.cs" Link="Program.cs" />
     <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
-    <PackageReference Include="Whisper.net" />
-    <PackageReference Include="Whisper.net.Runtime.Cuda12" />
     <PackageReference Include="org.k2fsa.sherpa.onnx" />
   </ItemGroup>
 </Project>

@@ -89,3 +89,17 @@ public sealed record ComputeSelectionResult(
     bool FellBack,
     string Reason,
     ComputeDeviceInfo? Device = null);
+
+public sealed record ComputeRuntimeEvidence(
+    ComputeBackend Backend,
+    ComputeReadinessLayer Layer,
+    ComputeLayerState State,
+    string Status,
+    string ModelId = "",
+    string RuntimeVersion = "",
+    string DetectedPath = "",
+    DateTimeOffset? ObservedAt = null)
+{
+    public bool IsReady =>
+        State is ComputeLayerState.Ready or ComputeLayerState.Active;
+}

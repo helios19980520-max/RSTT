@@ -19,6 +19,15 @@ RSTT source and publish output do not include a speech model. The user explicitl
 | Microsoft.NET.Test.Sdk | 17.12.0 | MIT | https://github.com/microsoft/vstest |
 | coverlet.collector | 6.0.2 | MIT | https://github.com/coverlet-coverage/coverlet |
 
+## Optional Accelerator Pack dependencies
+
+| Component | Version | Terms | Project |
+| --- | --- | --- | --- |
+| NVIDIA CUDA runtime libraries | 12.8 | NVIDIA CUDA Toolkit EULA, Attachment A redistributables | https://docs.nvidia.com/cuda/eula/ |
+| NVIDIA cuDNN runtime DLLs | 9.24.0.43 | NVIDIA SDK / cuDNN supplement | https://docs.nvidia.com/deeplearning/cudnn/latest/ |
+| ONNX Runtime CUDA provider | sherpa-onnx 1.13.4 distribution | MIT | https://github.com/microsoft/onnxruntime |
+| sherpa-onnx Windows CUDA distribution | 1.13.4 | Apache-2.0 plus bundled dependencies | https://github.com/k2-fsa/sherpa-onnx |
+
 The .NET self-contained publish includes Microsoft .NET runtime components under their applicable Microsoft licence terms. NuGet packages also carry transitive dependencies; a distributor should preserve the licence files included in publish/package outputs and complete its own release audit.
 
 ## Downloadable speech models
@@ -45,7 +54,10 @@ The NVIDIA model cards describe the applicable models as available for commercia
 
 The models were trained on third-party datasets listed in their model cards. Model output can be inaccurate or biased and must not be treated as authoritative. RSTT provides transcription software, not a warranty of model fitness for a particular purpose.
 
-The CUDA Accelerator Pack is not a released RSTT artifact. No CUDA Toolkit,
-cuDNN, or CUDA execution-provider redistribution is claimed by this notice.
-A separate dependency and redistribution review is required before such a pack
-can be published.
+The locally built Accelerator Pack includes only the CUDA/cuDNN runtime DLLs
+required by RSTT's private workers, the matching ONNX provider, the CUDA EULA,
+the installed cuDNN license, this notice, and a complete size/SHA-256 manifest.
+CUDA Attachment A lists the included `cudart`, cuBLAS, cuFFT, and NVRTC
+families as redistributable with applications; the cuDNN supplement identifies
+runtime `.dll` files as distributable with an application. A public distributor
+must accept and comply with those terms and preserve all notices.

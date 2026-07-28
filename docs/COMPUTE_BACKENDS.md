@@ -1,105 +1,117 @@
 # Compute backends
 
-RSTT separates **hardware presence**, **runtime availability**, **model compatibility**, and **actual provider selection**. A GPU badge alone is never treated as successful acceleration.
+RSTT reports hardware, dependencies, worker handshake, provider, model load,
+warmup, and active inference as separate facts. GPU hardware alone never
+produces a `CUDA Active` label.
 
-## CPU
+## Runtime layout
 
-CPU is the mandatory baseline and is present in the standard package through NuGet `org.k2fsa.sherpa.onnx` 1.13.4. It requires no CUDA DLL merely to launch.
+Exactly one native ASR worker and one recognizer are active:
 
-Thread selection is model/profile-aware:
+| Package | Worker | Runtime |
+| --- | --- | --- |
+| Base CPU application | `workers/sherpa-cpu/1.13.4` | sherpa-onnx 1.13.4 CPU |
+| Base CPU application | `workers/whisper-cpu/1.9.1` | Whisper.net / whisper.cpp CPU |
+| Accelerator Pack | `workers/sherpa-cuda12/1.13.4` | sherpa 1.13.4, ONNX CUDA provider, CUDA 12.8, cuDNN 9.24 |
+| Accelerator Pack | `workers/whisper-cuda12/1.9.1` | Whisper.net 1.9.1 CUDA 12 |
 
-- Nemotron 560 ms recommends one CPU thread;
-- Parakeet 1120 ms recommends two;
-- an explicit user limit is clamped to a safe range;
-- CUDA, when genuinely available, does not create a second complete recognizer.
+Workers communicate through a versioned length-prefixed named pipe with typed
+handshake, load, warmup, start, little-endian float32 audio, finish, unload,
+shutdown, ping, hypothesis, performance, readiness, and fault messages.
 
-## CUDA
-
-The current model artifacts are CUDA-capable, but the standard NuGet package is a CPU runtime. RSTT therefore reports an NVIDIA adapter without advertising CUDA as available.
-
-A verified CUDA distribution requires:
-
-- the sherpa-onnx build matching the app version;
-- a matching ONNX Runtime CUDA execution provider;
-- CUDA 12.x dependencies for the investigated sherpa 1.13.4 Windows build;
-- cuDNN 9.x;
-- all dependent DLLs discoverable at process start; and
-- an actual recognizer warmup/inference probe.
-
-The official sherpa 1.13.4 CUDA Windows archive was inspected during this pass. Its native library imports `cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, `cufft64_11.dll`, and `cudnn64_9.dll`. Those prerequisites were not installed on the test PC. Bundling the provider plus redistributable CUDA/cuDNN components would add a substantial separate package and requires its own redistribution/license review.
-
-Consequently, this pass does **not** claim GPU execution. The test PC's RTX 2060 was detected, but actual ASR provider logs correctly read `cpu`.
+The base package does not load sherpa or Whisper native DLLs in the WPF process.
+CUDA and CPU runtimes may therefore coexist without DLL-name collisions.
 
 ## Selection policy
 
-| Requested setting | Validated CUDA available and model-compatible | Result |
-| --- | --- | --- |
-| CPU | Either | CPU |
-| Auto | Yes | CUDA |
-| Auto | No | CPU with explicit reason |
-| CUDA | Yes | CUDA |
-| CUDA | No | CPU fallback with explicit reason |
+| Requested setting | Behavior |
+| --- | --- |
+| CPU | Start only the model-appropriate CPU worker |
+| CUDA | Require the model-appropriate CUDA worker; surface failure |
+| Auto | Try CUDA handshake/load/warmup, fully terminate it on failure, then start CPU |
 
-The selection result records the request, actual backend, fallback flag, reason, and device. The speech engine uses only the selected provider string when creating the recognizer and logs the actual provider, model, thread count, profile, and reason.
+Warmup proves that the provider and model can execute, but the Live UI reports
+`CUDA Active` only after active-session audio has actually decoded.
 
-## Detection and diagnostics
+## RTX 2060 evidence
 
-`WindowsHardwareDetectionService` enumerates DXGI 1.1 adapters, filters software
-adapters, and reports vendor/device IDs plus dedicated/shared memory. NVIDIA
-command-line tooling is supplemental evidence only.
+The validation machine has an RTX 2060 (6,144 MiB VRAM), driver 595.71, and
+compute capability 7.5. CUDA 12.8 and 13.3 coexist. RSTT uses only its private
+CUDA 12.8/cuDNN 9.24 files for sherpa; users do not replace DLLs manually.
 
-`WindowsComputeDeviceService` reports each layer independently:
+Real packaged CUDA decode passed for:
 
-1. hardware;
-2. driver;
-3. CUDA runtime;
-4. cuDNN;
-5. sherpa CUDA runtime;
-6. ONNX provider load;
-7. model compatibility;
-8. recognizer load;
-9. warmup; and
-10. active-session inference.
+- Nemotron Streaming English 0.6B;
+- Qwen3-ASR 0.6B INT8;
+- Whisper Large v3 Turbo Q5_0;
+- Whisper Large v3 Turbo full.
 
-The Settings diagnostics self-test includes those layers, ASR, audio, and
-performance data. It exposes cards for the VC++ runtime, physical GPU, driver,
-CUDA runtime, cuDNN, sherpa worker, whisper.cpp worker, provider, recognizer,
-warmup, and active inference. Detected and required versions, paths, fallback
-reasons, the RSTT Accelerator Pack action, and official NVIDIA/CUDA/cuDNN/VC++
-links are shown independently. “Copy Diagnostics” excludes transcript content.
+See [Performance](PERFORMANCE.md) and [Current issues](CURRENT_ISSUES.md) for
+the measured RTF and memory values. On this GPU, CUDA is a major improvement
+for Whisper, modest for Nemotron, and slower than CPU for the short Qwen test
+clip. Backend labels therefore describe execution, not a speed promise.
 
-File presence is only dependency evidence. `CUDA Active` is not shown until an
-actual decode has occurred with provider `cuda`.
+## Build and install the Accelerator Pack
 
-## AMD and Intel
+Prerequisites for building the pack are CUDA Toolkit 12.8, cuDNN 9.x, and the
+pinned official sherpa 1.13.4 CUDA archive. The script validates the archive
+SHA-256, publishes both workers, copies only required redistributable DLLs,
+removes the irrelevant Linux Whisper runtime, collects notices, and creates a
+per-file SHA-256 manifest plus Zip64 archive.
 
-No DirectML, ROCm, OpenVINO, or other accelerator provider is shipped. AMD/Intel adapter presence therefore does not create an activatable backend. CPU remains the fallback until a native engine is integrated and measured.
+```powershell
+.\scripts\Build-AcceleratorPack.ps1 `
+  -Configuration Release `
+  -SherpaArchivePath C:\path\to\sherpa-onnx-v1.13.4-cuda-12.x-cudnn-9.x-win-x64-cuda.tar.bz2
+```
 
-## Packaging strategy and current boundary
+Install into a published RSTT directory:
 
-Keep CPU and GPU runtime packages separable:
+```powershell
+Expand-Archive .\RSTT-Accelerator-Pack-1.0.0-win-x64.zip .\rstt-pack
+& .\rstt-pack\RSTT-Accelerator-Pack-1.0.0-win-x64\Install-AcceleratorPack.ps1 `
+  -AppDirectory C:\path\to\RSTT
+```
 
-- the CPU build stays small and portable;
-- a CUDA build must carry/declare its exact prerequisites;
-- both use the same model/catalog/session architecture;
-- model downloads are not duplicated;
-- only one complete recognizer is active at a time.
+The installer validates every file before copying, stages each worker, retains
+an existing same-version worker as a timestamped recovery directory, and never
+writes to the global CUDA installation.
 
-The base package now includes a versioned `whisper-cpu/1.9.1` worker. The
-optional `whisper-cuda12/1.9.1` worker project uses the same versioned,
-length-prefixed named-pipe protocol. The protocol has typed handshake, load,
-warmup, start, float32 audio, finish, unload, shutdown, ping, readiness,
-hypothesis, performance, and structured-fault messages. Auto fully terminates a
-failed Whisper CUDA worker before starting CPU.
+## Diagnostics and remediation
 
-Sherpa CPU execution has not yet moved out of process, and the reviewed
-sherpa CUDA 12/cuDNN 9 provider bundle is not present. The repository therefore
-does not publish or advertise a complete Accelerator Pack and does not claim
-CUDA inference. Auto and explicit CUDA retain layer-specific failure evidence
-on this machine.
+Settings → Diagnostics shows:
 
-References:
+1. System and Microsoft VC++ runtime;
+2. physical GPU, vendor/device ID, dedicated memory;
+3. NVIDIA driver;
+4. CUDA runtime;
+5. cuDNN;
+6. sherpa and Whisper native workers;
+7. provider handshake;
+8. model compatibility and recognizer load;
+9. warmup;
+10. active inference and fallback reason.
 
-- [sherpa-onnx Windows CUDA build guidance](https://k2-fsa.github.io/sherpa/onnx/install/windows/build-cuda.html)
-- [ONNX Runtime installation matrix](https://onnxruntime.ai/docs/install/)
-- [ONNX Runtime CUDA execution provider requirements](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
+The self-test launches the selected isolated worker and decodes a pinned
+public-domain speech asset. Copied diagnostics contain no recognized words or
+audio.
+
+Official remediation links:
+
+- [NVIDIA driver download](https://www.nvidia.com/Download/index.aspx)
+- [CUDA Toolkit archive](https://developer.nvidia.com/cuda-toolkit-archive)
+- [cuDNN downloads](https://developer.nvidia.com/cudnn-downloads)
+- [Microsoft Visual C++ x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+- [sherpa Windows CUDA guidance](https://k2-fsa.github.io/sherpa/onnx/install/windows/build-cuda.html)
+- [ONNX Runtime CUDA requirements](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
+
+## Licensing boundary
+
+The pack includes RSTT's license, third-party notices, the CUDA EULA, and the
+installed cuDNN license. CUDA Attachment A identifies `cudart`, cuBLAS, cuFFT,
+and NVRTC runtime DLLs as redistributable, while the cuDNN supplement identifies
+runtime `.dll` files as distributable with an application. Public distribution
+still requires the release owner to accept and comply with those terms.
+
+AMD/Intel GPU providers, DirectML, WinML, ROCm, and OpenVINO remain Planned.
+Those adapters use the CPU worker in this release.

@@ -31,6 +31,7 @@ public sealed class SpeechEngineFactory : ISpeechEngineFactory
             ? new WhisperCppEngine(
                 _models,
                 _settings,
+                _compute,
                 _performance,
                 _loggerFactory.CreateLogger<WhisperCppEngine>())
             : descriptor.StreamingMode is SpeechStreamingMode.SegmentedVad or

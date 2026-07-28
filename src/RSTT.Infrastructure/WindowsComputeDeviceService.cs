@@ -24,6 +24,8 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
     private const string VcRuntimeUrl =
         "https://aka.ms/vs/17/release/vc_redist.x64.exe";
     private readonly IHardwareDetectionService _hardware;
+    private readonly object _evidenceGate = new();
+    private readonly Dictionary<ComputeReadinessLayer, ComputeRuntimeEvidence> _runtimeEvidence = [];
     private IReadOnlyList<ComputeBackendProbe>? _cached;
 
     public WindowsComputeDeviceService(IHardwareDetectionService hardware)
@@ -65,17 +67,25 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
         }
 
         var layers = ProbeCudaRuntimeLayers(nvidia);
+        var anyWorkerReady = layers.Any(layer =>
+            (layer.Layer is ComputeReadinessLayer.SherpaCudaRuntime or
+                ComputeReadinessLayer.WhisperCudaRuntime) &&
+            layer.IsReady);
         var firstBlocking = layers.FirstOrDefault(layer =>
             (layer.Layer is ComputeReadinessLayer.CudaRuntime or
                 ComputeReadinessLayer.Cudnn or
-                ComputeReadinessLayer.SherpaCudaRuntime or
                 ComputeReadinessLayer.ProviderLoad) &&
-            !layer.IsReady);
+            layer.State is ComputeLayerState.Missing or
+                ComputeLayerState.Incompatible or
+                ComputeLayerState.Failed);
+        var available = anyWorkerReady && firstBlocking is null;
         probes.Add(new ComputeBackendProbe(
             ComputeBackend.Cuda,
-            false,
-            firstBlocking?.Status ??
-            "CUDA files are present, but worker load, warmup, and decode are not verified.",
+            available,
+            available
+                ? "A CUDA worker and its native runtime files are installed; model load and warmup will verify execution."
+                : firstBlocking?.Status ??
+                    "No model-appropriate CUDA worker is installed.",
             nvidia));
         return _cached = probes;
     }
@@ -86,7 +96,28 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
         CancellationToken cancellationToken = default)
     {
         var probes = await ProbeAsync(cancellationToken).ConfigureAwait(false);
-        return ComputeSelectionPolicy.Select(requested, model, probes);
+        var selected = ComputeSelectionPolicy.Select(requested, model, probes);
+        if (selected.Selected != ComputeBackend.Cuda)
+        {
+            return selected;
+        }
+
+        var workerPath = ResolveWorkerPath(model);
+        if (File.Exists(workerPath))
+        {
+            return selected with
+            {
+                Reason = $"CUDA preflight passed for {Path.GetFileName(workerPath)}. Worker load and warmup are required.",
+            };
+        }
+
+        var cpu = probes.FirstOrDefault(probe => probe.Backend == ComputeBackend.Cpu);
+        return new ComputeSelectionResult(
+            requested,
+            ComputeBackend.Cpu,
+            true,
+            $"The CUDA worker required by {model.DisplayName} is missing: {workerPath}",
+            cpu?.Device);
     }
 
     public async Task<ComputeDiagnosticsReport> GetDiagnosticsAsync(
@@ -122,6 +153,29 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                     : ComputeLayerState.Incompatible));
         }
 
+        lock (_evidenceGate)
+        {
+            foreach (var evidence in _runtimeEvidence.Values)
+            {
+                var index = layers.FindIndex(layer => layer.Layer == evidence.Layer);
+                var status = new ComputeLayerStatus(
+                    evidence.Layer,
+                    evidence.IsReady,
+                    evidence.Status,
+                    evidence.RuntimeVersion,
+                    evidence.State,
+                    DetectedPath: evidence.DetectedPath);
+                if (index >= 0)
+                {
+                    layers[index] = status;
+                }
+                else
+                {
+                    layers.Add(status);
+                }
+            }
+        }
+
         var selection = model is null
             ? new ComputeSelectionResult(
                 requested,
@@ -129,13 +183,38 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 requested != ComputeBackend.Cpu,
                 "No model was supplied for backend selection.")
             : await SelectAsync(requested, model, cancellationToken).ConfigureAwait(false);
+        var active = layers.Any(layer =>
+            layer.Layer == ComputeReadinessLayer.ActiveInference &&
+            layer.State == ComputeLayerState.Active);
         return new ComputeDiagnosticsReport(
             layers,
             requested,
-            selection.Selected,
-            selection.Selected == ComputeBackend.Cuda
-                ? "CUDA Ready (decode not yet verified)"
+            active ? ComputeBackend.Cuda : selection.Selected,
+            active
+                ? "CUDA Active"
+                : selection.Selected == ComputeBackend.Cuda
+                    ? "CUDA Ready (decode not yet verified)"
                 : "CPU Active");
+    }
+
+    public void ReportRuntimeEvidence(ComputeRuntimeEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        lock (_evidenceGate)
+        {
+            _runtimeEvidence[evidence.Layer] = evidence with
+            {
+                ObservedAt = evidence.ObservedAt ?? DateTimeOffset.UtcNow,
+            };
+        }
+    }
+
+    public void ResetRuntimeEvidence()
+    {
+        lock (_evidenceGate)
+        {
+            _runtimeEvidence.Clear();
+        }
     }
 
     private static List<ComputeLayerStatus> ProbeCudaRuntimeLayers(
@@ -288,6 +367,26 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 "CUDA Active is reported only after a successful model decode.",
                 State: ComputeLayerState.NotTested),
         ];
+    }
+
+    private static string ResolveWorkerPath(ModelDescriptor model)
+    {
+        var isWhisper = model.Engine.Equals(
+            "whisper-cpp",
+            StringComparison.OrdinalIgnoreCase);
+        return isWhisper
+            ? Path.Combine(
+                AppContext.BaseDirectory,
+                "workers",
+                "whisper-cuda12",
+                "1.9.1",
+                "RSTT.Whisper.Cuda12.Worker.exe")
+            : Path.Combine(
+                AppContext.BaseDirectory,
+                "workers",
+                "sherpa-cuda12",
+                "1.13.4",
+                "RSTT.Speech.Worker.exe");
     }
 
     private static RuntimeFile FindLibrary(string fileName, string workerRoot)

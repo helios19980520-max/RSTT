@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RSTT.Core\RSTT.Core.csproj" />
+    <ProjectReference Include="..\..\src\RSTT.Speech\RSTT.Speech.csproj" />
+    <PackageReference Include="NAudio" />
+  </ItemGroup>
+</Project>

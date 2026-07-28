@@ -16,4 +16,8 @@ public interface IComputeBackendService
         ComputeBackend requested,
         ModelDescriptor? model = null,
         CancellationToken cancellationToken = default);
+
+    void ReportRuntimeEvidence(ComputeRuntimeEvidence evidence);
+
+    void ResetRuntimeEvidence();
 }

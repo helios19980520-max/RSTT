@@ -2,7 +2,7 @@
 
 > Evidence scope: the ASR/30-minute measurements below were captured before the
 > 2026-07-28 typed-contract, finalization, and injection hardening changes. The
-> current revision passed 73/73 Debug and Release tests and a published-launch
+> current revision passed 85/85 Debug and Release tests and a published-launch
 > smoke test, but its 30-minute performance/commit/injection acceptance run has
 > not yet been repeated. Do not present the older measurements as a fresh run.
 
@@ -16,6 +16,28 @@ Measured on 2026-07-28:
 | Audio | Realtek render endpoint, 48 kHz, 32-bit float, stereo |
 | Normalized ASR input | 16 kHz mono float |
 | Test source | Repeating local SAPI English paragraph through real WASAPI loopback |
+
+## Isolated CPU/CUDA model matrix
+
+The current worker revision was measured with one pinned 6.625-second 16 kHz
+mono speech file. These are functional/RTF measurements, not an accuracy
+benchmark:
+
+| Model/profile | Backend | Load ms | Warmup ms | Decode ms | RTF | Peak working set |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Nemotron EN 560 ms | CPU | 3,278.9 | 629.7 | 2,721.8 | 0.411 | 769.0 MiB |
+| Nemotron EN 560 ms | CUDA | 3,811.1 | 287.7 | 2,057.6 | 0.311 | 1,177.4 MiB |
+| Qwen3-ASR 0.6B INT8 | CPU | 3,741.0 | 566.4 | 1,741.0 | 0.263 | 1,336.0 MiB |
+| Qwen3-ASR 0.6B INT8 | CUDA | 5,090.4 | 814.1 | 2,677.7 | 0.404 | 1,763.9 MiB |
+| Whisper Turbo Q5_0 | CPU | 553.9 | 29,974.0 | 30,196.4 | 4.558 | 619.6 MiB |
+| Whisper Turbo Q5_0 | CUDA | 889.0 | 18,993.0 | 770.3 | 0.116 | 495.2 MiB |
+| Whisper Turbo full | CPU | 2,266.8 | 31,965.2 | 32,567.7 | 4.916 | 1,624.7 MiB |
+| Whisper Turbo full | CUDA | 1,631.9 | 507.4 | 420.9 | 0.064 | 434.5 MiB |
+
+All eight runs produced meaningful final text and preserved the last word.
+Whisper CPU is not realtime on this i7-12700F; both CUDA profiles are. Qwen CPU
+was faster than CUDA on this short clip, demonstrating why the UI reports
+actual execution separately from performance expectations.
 
 Percentages below are whole-machine-normalized process CPU values sampled during comparable 45-second continuous-speech windows. Working set includes loaded ONNX model/native runtime.
 

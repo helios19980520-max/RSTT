@@ -2,7 +2,6 @@
   <PropertyGroup><TargetFramework>net8.0-windows</TargetFramework></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
-    <PackageReference Include="org.k2fsa.sherpa.onnx" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
   <ItemGroup>
