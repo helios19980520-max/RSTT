@@ -8,6 +8,8 @@ RSTT source and publish output do not include a speech model. The user explicitl
 | --- | --- | --- | --- |
 | NAudio | 2.3.0 | MIT | https://github.com/naudio/NAudio |
 | sherpa-onnx | 1.13.4 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx |
+| Whisper.net / whisper.cpp bindings | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
+| whisper.cpp native runtime | Whisper.net 1.9.1 pinned submodule | MIT | https://github.com/ggml-org/whisper.cpp |
 | Microsoft.Extensions.DependencyInjection | 8.0.1 | MIT | https://github.com/dotnet/runtime |
 | Microsoft.Extensions.Logging | 8.0.1 | MIT | https://github.com/dotnet/runtime |
 | Microsoft.Extensions.Logging.Abstractions | 8.0.2 | MIT | https://github.com/dotnet/runtime |
@@ -16,6 +18,15 @@ RSTT source and publish output do not include a speech model. The user explicitl
 | xunit.runner.visualstudio | 3.0.2 | Apache-2.0 | https://github.com/xunit/visualstudio.xunit |
 | Microsoft.NET.Test.Sdk | 17.12.0 | MIT | https://github.com/microsoft/vstest |
 | coverlet.collector | 6.0.2 | MIT | https://github.com/coverlet-coverage/coverlet |
+
+## Optional Accelerator Pack dependencies
+
+| Component | Version | Terms | Project |
+| --- | --- | --- | --- |
+| NVIDIA CUDA runtime libraries | 12.8 | NVIDIA CUDA Toolkit EULA, Attachment A redistributables | https://docs.nvidia.com/cuda/eula/ |
+| NVIDIA cuDNN runtime DLLs | 9.24.0.43 | NVIDIA SDK / cuDNN supplement | https://docs.nvidia.com/deeplearning/cudnn/latest/ |
+| ONNX Runtime CUDA provider | sherpa-onnx 1.13.4 distribution | MIT | https://github.com/microsoft/onnxruntime |
+| sherpa-onnx Windows CUDA distribution | 1.13.4 | Apache-2.0 plus bundled dependencies | https://github.com/k2-fsa/sherpa-onnx |
 
 The .NET self-contained publish includes Microsoft .NET runtime components under their applicable Microsoft licence terms. NuGet packages also carry transitive dependencies; a distributor should preserve the licence files included in publish/package outputs and complete its own release audit.
 
@@ -29,6 +40,11 @@ The .NET self-contained publish includes Microsoft .NET runtime components under
 | sherpa-onnx Nemotron 3.5 multilingual INT8 ONNX export, 560 ms | https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11 | Export for sherpa-onnx; underlying model terms continue to apply |
 | Parakeet Unified English 0.6B | https://huggingface.co/nvidia/parakeet-unified-en-0.6b | NVIDIA Open Model License Agreement |
 | sherpa-onnx INT8 ONNX export, 1.12 s buffered streaming | https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms | Export of the NVIDIA model for sherpa-onnx; underlying model terms continue to apply |
+| Parakeet TDT 0.6B v3 | https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3 | NVIDIA Open Model License Agreement; catalog record is non-actionable |
+| Qwen3-ASR 0.6B and pinned sherpa INT8 export | https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 | Apache-2.0; actionable Preview, not production-Supported |
+| Whisper Large v3 Turbo Q5_0/full ggml files | https://huggingface.co/ggerganov/whisper.cpp | MIT; actionable Preview, not production-Supported |
+| Silero VAD ONNX export | https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models | MIT-compatible upstream model terms; downloaded with Qwen/Whisper profiles |
+| Moonshine Tiny/Base | https://huggingface.co/UsefulSensors | MIT terms identified by upstream sherpa documentation; catalog records are non-actionable |
 
 Model notice:
 
@@ -37,3 +53,11 @@ Model notice:
 The NVIDIA model cards describe the applicable models as available for commercial and non-commercial use subject to their governing licence. Review the current [NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/), [OpenMDW 1.1](https://openmdw.ai/license-1-1/), and each model card before use, modification, or redistribution.
 
 The models were trained on third-party datasets listed in their model cards. Model output can be inaccurate or biased and must not be treated as authoritative. RSTT provides transcription software, not a warranty of model fitness for a particular purpose.
+
+The locally built Accelerator Pack includes only the CUDA/cuDNN runtime DLLs
+required by RSTT's private workers, the matching ONNX provider, the CUDA EULA,
+the installed cuDNN license, this notice, and a complete size/SHA-256 manifest.
+CUDA Attachment A lists the included `cudart`, cuBLAS, cuFFT, and NVRTC
+families as redistributable with applications; the cuDNN supplement identifies
+runtime `.dll` files as distributable with an application. A public distributor
+must accept and comply with those terms and preserve all notices.

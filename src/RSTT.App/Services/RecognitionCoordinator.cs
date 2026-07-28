@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using RSTT.Core.Abstractions;
@@ -16,6 +18,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 {
     private const int ResultQueueCapacity = 128;
     private const int InjectionQueueCapacity = 128;
+    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan UiInterval = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan RepeatedWarningInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan HealthCheckInterval = TimeSpan.FromSeconds(1);
@@ -34,6 +37,8 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly object _sessionStateGate = new();
     private readonly object _uiGate = new();
+    private readonly object _terminalWriteGate = new();
+    private readonly List<Task> _pendingTerminalWrites = [];
     private readonly TranscriptionSessionStateMachine _sessionState = new();
     private CancellationTokenSource? _audioCancellation;
     private CancellationTokenSource? _uiCancellation;
@@ -173,7 +178,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             await _speechEngine.ResetAsync(cancellationToken).ConfigureAwait(false);
             await _speechEngine.StartAsync(cancellationToken).ConfigureAwait(false);
 
-            var generation = Interlocked.Increment(ref _generation);
+            var generation = new SessionGenerationId(Interlocked.Increment(ref _generation));
             _audioCancellation = new CancellationTokenSource();
             CreateSessionWorkers(generation);
 
@@ -184,7 +189,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
             Volatile.Write(ref _isListening, true);
             _audioWorker = Task.Run(
-                () => ProcessAudioAsync(_audioCancellation.Token),
+                () => ProcessAudioAsync(generation, _audioCancellation.Token),
                 CancellationToken.None);
             TransitionSessionTo(TranscriptionSessionState.Listening);
             _applicationState.TransitionTo(
@@ -282,6 +287,108 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         }
     }
 
+    public async Task<int> RunSpeechSelfTestAsync(
+        ReadOnlyMemory<float> samples,
+        CancellationToken cancellationToken = default)
+    {
+        if (samples.IsEmpty)
+        {
+            throw new ArgumentException(
+                "Self-test audio cannot be empty.",
+                nameof(samples));
+        }
+
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        EventHandler<RecognitionHypothesis>? handler = null;
+        var started = false;
+        var finalResults = 0;
+        try
+        {
+            if (IsListening || _audioWorker is not null)
+            {
+                throw new InvalidOperationException(
+                    "Diagnostics cannot run while a live session is active.");
+            }
+
+            if (!_speechEngine.IsReady)
+            {
+                throw new InvalidOperationException(
+                    "The selected speech engine is not ready.");
+            }
+
+            var generation = new SessionGenerationId(
+                Interlocked.Increment(ref _generation));
+            handler = (_, hypothesis) =>
+            {
+                if (hypothesis.SessionGenerationId == generation &&
+                    hypothesis.IsFinal &&
+                    !string.IsNullOrWhiteSpace(hypothesis.Text))
+                {
+                    Interlocked.Increment(ref finalResults);
+                }
+            };
+            _speechEngine.RecognitionResultAvailable += handler;
+            LogSelfTestStage(_logger, "reset");
+            await _speechEngine.ResetAsync(cancellationToken).ConfigureAwait(false);
+            LogSelfTestStage(_logger, "start");
+            await _speechEngine.StartAsync(cancellationToken).ConfigureAwait(false);
+            started = true;
+
+            // Use the balanced native-streaming frame size for diagnostics.
+            // A 100 ms request cadence forces needless decode/control
+            // round-trips and can make the bundled 11-second sample exceed
+            // the self-test timeout on otherwise healthy workers.
+            const int frameSamples = AudioChunk.SampleRate * 560 / 1_000;
+            var frameCount = (samples.Length + frameSamples - 1) / frameSamples;
+            long sequence = 0;
+            for (var offset = 0; offset < samples.Length; offset += frameSamples)
+            {
+                var count = Math.Min(frameSamples, samples.Length - offset);
+                LogSelfTestStage(
+                    _logger,
+                    $"audio frame {sequence + 1}/{frameCount}");
+                await _speechEngine.ProcessAudioAsync(
+                        new AudioChunk(
+                            ++sequence,
+                            DateTimeOffset.UtcNow,
+                            samples.Slice(offset, count).ToArray(),
+                            generation),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            LogSelfTestStage(_logger, "finish");
+            await _speechEngine.StopAsync(cancellationToken).ConfigureAwait(false);
+            started = false;
+            LogSelfTestStage(_logger, "complete");
+            return Volatile.Read(ref finalResults);
+        }
+        finally
+        {
+            if (handler is not null)
+            {
+                _speechEngine.RecognitionResultAvailable -= handler;
+            }
+
+            if (started)
+            {
+                try
+                {
+                    using var cleanupTimeout =
+                        new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await _speechEngine.StopAsync(cleanupTimeout.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    LogSelfTestCleanupFailed(_logger, exception);
+                }
+            }
+
+            _lifecycleLock.Release();
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -297,10 +404,10 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
             if (SessionState != TranscriptionSessionState.Faulted)
             {
-                TransitionSessionTo(TranscriptionSessionState.Stopping);
+                TransitionSessionTo(TranscriptionSessionState.Completing);
             }
 
-            _applicationState.TransitionTo(ApplicationState.Stopping, "Stopping…");
+            _applicationState.TransitionTo(ApplicationState.Stopping, "Finishing final words…");
             await StopUnsafeAsync().ConfigureAwait(false);
             _applicationState.TransitionTo(
                 ApplicationState.Ready,
@@ -314,7 +421,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         }
     }
 
-    private void CreateSessionWorkers(long generation)
+    private void CreateSessionWorkers(SessionGenerationId generation)
     {
         var results = Channel.CreateBounded<ResultEnvelope>(
             new BoundedChannelOptions(ResultQueueCapacity)
@@ -335,6 +442,10 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
         _resultWriter = results.Writer;
         _injectionWriter = injections.Writer;
+        lock (_terminalWriteGate)
+        {
+            _pendingTerminalWrites.Clear();
+        }
         _pendingUiUpdate = null;
         _pendingUiCoalesced = 0;
         _lastInjectionStatus = TextInjectionStatus.Success;
@@ -343,14 +454,19 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             () => ProcessResultsAsync(results.Reader, injections.Writer, generation),
             CancellationToken.None);
         _injectionWorker = Task.Run(
-            () => ProcessInjectionsAsync(injections.Reader, generation),
+            () => ProcessInjectionsAsync(
+                injections.Reader,
+                generation,
+                _audioCancellation?.Token ?? CancellationToken.None),
             CancellationToken.None);
         _uiWorker = Task.Run(
             () => PublishUiUpdatesAsync(_uiCancellation.Token),
             CancellationToken.None);
     }
 
-    private async Task ProcessAudioAsync(CancellationToken cancellationToken)
+    private async Task ProcessAudioAsync(
+        SessionGenerationId generation,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -362,7 +478,9 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                 try
                 {
                     await _speechEngine
-                        .ProcessAudioAsync(chunk, cancellationToken)
+                        .ProcessAudioAsync(
+                            chunk with { SessionGenerationId = generation },
+                            cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (Exception exception) when (
@@ -380,7 +498,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                             .ConfigureAwait(false);
                         var writer = Volatile.Read(ref _resultWriter);
                         writer?.TryWrite(ResultEnvelope.CreateReset(
-                            Volatile.Read(ref _generation)));
+                            generation));
                         _applicationState.TransitionTo(
                             ApplicationState.Listening,
                             "Recovered from a recognition engine error");
@@ -414,14 +532,14 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private async Task ProcessResultsAsync(
         ChannelReader<ResultEnvelope> reader,
         ChannelWriter<InjectionRequest> injectionWriter,
-        long generation)
+        SessionGenerationId generation)
     {
         try
         {
             await foreach (var envelope in reader.ReadAllAsync().ConfigureAwait(false))
             {
                 if (envelope.Generation != generation ||
-                    generation != Volatile.Read(ref _generation))
+                    generation.Value != Volatile.Read(ref _generation))
                 {
                     continue;
                 }
@@ -431,10 +549,10 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                     var stableText = _stabilizer.ResetCurrentSegment();
                     _captionHistory.ClearPartial();
                     QueueUiUpdate(new TranscriptUpdate(
-                        stableText,
-                        string.Empty,
-                        string.Empty,
-                        false));
+                        new TranscriptSnapshot(stableText, string.Empty, string.Empty),
+                        Array.Empty<TranscriptCommit>(),
+                        false,
+                        SessionGenerationId: generation));
                     continue;
                 }
 
@@ -447,15 +565,27 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                 _captionHistory.Apply(update);
                 QueueUiUpdate(update);
 
-                if (IsListening &&
-                    _settings.Current.TextInjectionEnabled &&
-                    !string.IsNullOrWhiteSpace(update.NewlyStableText))
+                if (_settings.Current.TextInjectionEnabled)
                 {
-                    await injectionWriter
-                        .WriteAsync(
-                            new InjectionRequest(generation, update.NewlyStableText),
-                            CancellationToken.None)
-                        .ConfigureAwait(false);
+                    foreach (var commit in update.Commits)
+                    {
+                        var request = new InjectionRequest(
+                            commit.SessionGenerationId,
+                            commit.CommitId,
+                            commit.SourceSequenceId,
+                            commit.Text,
+                            commit.Timestamp);
+                        LogCommitBoundary(
+                            _logger,
+                            commit.SessionGenerationId.Value,
+                            commit.CommitId,
+                            commit.SourceSequenceId,
+                            commit.Text.Length,
+                            ComputeTextHash(commit.Text));
+                        await injectionWriter
+                            .WriteAsync(request, CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -467,13 +597,15 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
     private async Task ProcessInjectionsAsync(
         ChannelReader<InjectionRequest> reader,
-        long generation)
+        SessionGenerationId generation,
+        CancellationToken cancellationToken)
     {
-        await foreach (var request in reader.ReadAllAsync().ConfigureAwait(false))
+        await foreach (var request in reader
+                           .ReadAllAsync(cancellationToken)
+                           .ConfigureAwait(false))
         {
-            if (!IsListening ||
-                request.Generation != generation ||
-                generation != Volatile.Read(ref _generation))
+            if (request.SessionGenerationId != generation ||
+                generation.Value != Volatile.Read(ref _generation))
             {
                 continue;
             }
@@ -481,8 +613,13 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             try
             {
                 var result = await _textInjection
-                    .InjectTextAsync(request.Text)
+                    .InjectAsync(request, cancellationToken)
                     .ConfigureAwait(false);
+                _performance.RecordInjectionAttempt(
+                    request.Text.Length,
+                    result.SendInputCallCount,
+                    result.QueueDepthAtEnqueue,
+                    result.Succeeded);
                 if (result.Succeeded)
                 {
                     _performance.RecordInjection();
@@ -491,6 +628,10 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                 }
 
                 LogInjectionResultRateLimited(result);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception exception)
             {
@@ -564,35 +705,74 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
     private async Task StopUnsafeAsync()
     {
-        Volatile.Write(ref _isListening, false);
-        _audioCancellation?.Cancel();
-        await _audioCapture.StopAsync().ConfigureAwait(false);
-        await AwaitWorkerAsync(_audioWorker).ConfigureAwait(false);
-        _audioWorker = null;
-
-        await _speechEngine.StopAsync().ConfigureAwait(false);
-        var resultWriter = Interlocked.Exchange(ref _resultWriter, null);
-        resultWriter?.TryComplete();
-        await AwaitWorkerAsync(_resultWorker).ConfigureAwait(false);
-        _resultWorker = null;
-
-        var injectionWriter = Interlocked.Exchange(ref _injectionWriter, null);
-        injectionWriter?.TryComplete();
-        await AwaitWorkerAsync(_injectionWorker).ConfigureAwait(false);
-        _injectionWorker = null;
-
-        lock (_uiGate)
+        var incompleteStage = "stop WASAPI capture and complete raw audio";
+        using var timeout = new CancellationTokenSource(StopTimeout);
+        try
         {
-            PublishPendingUiUpdateUnsafe();
-        }
+            // IsListening intentionally remains true throughout completion so UI
+            // reflects an active generation and terminal commits stay admissible.
+            await _audioCapture.StopAsync(timeout.Token).ConfigureAwait(false);
 
-        _uiCancellation?.Cancel();
-        await AwaitWorkerAsync(_uiWorker).ConfigureAwait(false);
-        _uiWorker = null;
-        _uiCancellation?.Dispose();
-        _uiCancellation = null;
-        _audioCancellation?.Dispose();
-        _audioCancellation = null;
+            incompleteStage = "drain normalized audio into the recognizer";
+            await AwaitWorkerAsync(_audioWorker, timeout.Token).ConfigureAwait(false);
+            _audioWorker = null;
+
+            incompleteStage = "finish the sherpa stream and emit its terminal hypothesis";
+            await _speechEngine.StopAsync(timeout.Token).ConfigureAwait(false);
+            if (SessionState == TranscriptionSessionState.Completing)
+            {
+                TransitionSessionTo(TranscriptionSessionState.Stopping);
+            }
+
+            incompleteStage = "drain recognition results and transcript commits";
+            await AwaitPendingTerminalWritesAsync(timeout.Token).ConfigureAwait(false);
+            var resultWriter = Interlocked.Exchange(ref _resultWriter, null);
+            resultWriter?.TryComplete();
+            await AwaitWorkerAsync(_resultWorker, timeout.Token).ConfigureAwait(false);
+            _resultWorker = null;
+
+            incompleteStage = "drain ordered text injection requests";
+            var injectionWriter = Interlocked.Exchange(ref _injectionWriter, null);
+            injectionWriter?.TryComplete();
+            await AwaitWorkerAsync(_injectionWorker, timeout.Token).ConfigureAwait(false);
+            _injectionWorker = null;
+
+            incompleteStage = "publish the final UI snapshot";
+            lock (_uiGate)
+            {
+                PublishPendingUiUpdateUnsafe();
+            }
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            LogStopTimedOut(_logger, incompleteStage, StopTimeout.TotalSeconds);
+            _audioCancellation?.Cancel();
+            Interlocked.Exchange(ref _resultWriter, null)?.TryComplete();
+            Interlocked.Exchange(ref _injectionWriter, null)?.TryComplete();
+            await AwaitPendingTerminalWritesAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Only now does this generation become stopped. Cancellation is a
+            // hard-stop fallback, never the normal queue-draining mechanism.
+            Volatile.Write(ref _isListening, false);
+            _audioCancellation?.Cancel();
+            _uiCancellation?.Cancel();
+            await AwaitWorkersBestEffortAsync(
+                    _audioWorker,
+                    _resultWorker,
+                    _injectionWorker,
+                    _uiWorker)
+                .ConfigureAwait(false);
+            _audioWorker = null;
+            _resultWorker = null;
+            _injectionWorker = null;
+            _uiWorker = null;
+            _uiCancellation?.Dispose();
+            _uiCancellation = null;
+            _audioCancellation?.Dispose();
+            _audioCancellation = null;
+        }
 
         var snapshot = _performance.GetSnapshot();
         LogSessionPerformance(
@@ -609,20 +789,47 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             snapshot.DroppedAudioMilliseconds,
             snapshot.CoalescedUiEvents);
 
-        if (SessionState is TranscriptionSessionState.Stopping or
+        if (SessionState is TranscriptionSessionState.Completing or
+            TranscriptionSessionState.Stopping or
             TranscriptionSessionState.Faulted)
         {
             TransitionSessionTo(TranscriptionSessionState.Stopped);
         }
     }
 
-    private void OnRecognitionResultAvailable(object? sender, RecognitionResult result)
+    private void OnRecognitionResultAvailable(object? sender, RecognitionHypothesis result)
     {
         Interlocked.Exchange(ref _lastRecognitionTimestamp, Stopwatch.GetTimestamp());
-        var generation = Volatile.Read(ref _generation);
-        var writer = Volatile.Read(ref _resultWriter);
-        if (writer is null || writer.TryWrite(new ResultEnvelope(generation, result)))
+        var generation = new SessionGenerationId(Volatile.Read(ref _generation));
+        if (result.SessionGenerationId != generation)
         {
+            LogStaleHypothesisDropped(
+                _logger,
+                result.SessionGenerationId.Value,
+                generation.Value,
+                result.SequenceId);
+            return;
+        }
+
+        var writer = Volatile.Read(ref _resultWriter);
+        var envelope = new ResultEnvelope(generation, result);
+        if (writer is null || writer.TryWrite(envelope))
+        {
+            return;
+        }
+
+        // Partial UI hypotheses may be dropped under sustained overload. A
+        // terminal hypothesis instead waits asynchronously for bounded channel
+        // capacity and Stop awaits that write before completing the channel.
+        if (result.IsFinal)
+        {
+            var pendingWrite = writer.WriteAsync(envelope).AsTask();
+            lock (_terminalWriteGate)
+            {
+                _pendingTerminalWrites.RemoveAll(static task => task.IsCompleted);
+                _pendingTerminalWrites.Add(pendingWrite);
+            }
+
             return;
         }
 
@@ -718,7 +925,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             LogInjectionNotCompleted(
                 _logger,
                 result.Status,
-                result.Message ?? "No diagnostic was provided.");
+                result.DiagnosticMessage ?? "No diagnostic was provided.");
         }
     }
 
@@ -735,7 +942,9 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         }
     }
 
-    private static async Task AwaitWorkerAsync(Task? worker)
+    private static async Task AwaitWorkerAsync(
+        Task? worker,
+        CancellationToken cancellationToken = default)
     {
         if (worker is null)
         {
@@ -744,12 +953,63 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
         try
         {
-            await worker.ConfigureAwait(false);
+            await worker.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
         }
     }
+
+    private async Task AwaitPendingTerminalWritesAsync(CancellationToken cancellationToken)
+    {
+        Task[] pending;
+        lock (_terminalWriteGate)
+        {
+            pending = _pendingTerminalWrites.ToArray();
+        }
+
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+        }
+        finally
+        {
+            lock (_terminalWriteGate)
+            {
+                _pendingTerminalWrites.RemoveAll(static task => task.IsCompleted);
+            }
+        }
+    }
+
+    private static async Task AwaitWorkersBestEffortAsync(params Task?[] workers)
+    {
+        var remaining = workers.Where(static worker => worker is not null).Cast<Task>().ToArray();
+        if (remaining.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.WhenAll(remaining).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The five-second stop timeout already records the precise incomplete
+            // stage. This short wait only lets cooperative cancellation settle.
+        }
+    }
+
+    private static string ComputeTextHash(string text) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..12];
 
     public async ValueTask DisposeAsync()
     {
@@ -762,15 +1022,13 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     }
 
     private sealed record ResultEnvelope(
-        long Generation,
-        RecognitionResult? Result,
+        SessionGenerationId Generation,
+        RecognitionHypothesis? Result,
         bool ResetCurrentSegment = false)
     {
-        public static ResultEnvelope CreateReset(long generation) =>
+        public static ResultEnvelope CreateReset(SessionGenerationId generation) =>
             new(generation, null, true);
     }
-
-    private sealed record InjectionRequest(long Generation, string Text);
 
     [LoggerMessage(LogLevel.Information, "Local speech model is not ready: {Message}")]
     private static partial void LogModelNotReady(ILogger logger, string message);
@@ -779,6 +1037,14 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private static partial void LogEngineInitializationFailed(
         ILogger logger,
         Exception exception);
+
+    [LoggerMessage(LogLevel.Warning, "Speech self-test cleanup failed.")]
+    private static partial void LogSelfTestCleanupFailed(
+        ILogger logger,
+        Exception exception);
+
+    [LoggerMessage(LogLevel.Information, "Speech self-test entered stage {Stage}.")]
+    private static partial void LogSelfTestStage(ILogger logger, string stage);
 
     [LoggerMessage(LogLevel.Error, "Failed to start the audio recognition pipeline.")]
     private static partial void LogPipelineStartFailed(
@@ -861,4 +1127,32 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         double oldestAudio,
         long droppedAudio,
         long coalescedUiEvents);
+
+    [LoggerMessage(
+        LogLevel.Debug,
+        "Transcript commit generation={Generation} commit={CommitId} sourceSequence={SourceSequenceId} utf16={Utf16Length} hash={TextHash}.")]
+    private static partial void LogCommitBoundary(
+        ILogger logger,
+        long generation,
+        long commitId,
+        long sourceSequenceId,
+        int utf16Length,
+        string textHash);
+
+    [LoggerMessage(
+        LogLevel.Warning,
+        "Recognition stop exceeded {TimeoutSeconds:F1}s while attempting to {IncompleteStage}; remaining work was hard-cancelled.")]
+    private static partial void LogStopTimedOut(
+        ILogger logger,
+        string incompleteStage,
+        double timeoutSeconds);
+
+    [LoggerMessage(
+        LogLevel.Debug,
+        "Dropped stale recognition hypothesis generation={ResultGeneration}; active={ActiveGeneration}; sequence={SequenceId}.")]
+    private static partial void LogStaleHypothesisDropped(
+        ILogger logger,
+        long resultGeneration,
+        long activeGeneration,
+        long sequenceId);
 }

@@ -36,8 +36,32 @@ public sealed partial class JsonSettingsService : ISettingsService, IDisposable
 
         try
         {
-            await using var stream = File.OpenRead(_paths.SettingsFilePath);
-            Current = await JsonSerializer.DeserializeAsync<AppSettings>(stream, SerializerOptions, cancellationToken).ConfigureAwait(false) ?? new AppSettings();
+            var json = await File.ReadAllTextAsync(
+                    _paths.SettingsFilePath,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            Current = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions) ??
+                new AppSettings();
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!HasProperty(root, nameof(AppSettings.DefaultModelId)))
+            {
+                Current.DefaultModelId = Current.SpeechModel;
+            }
+
+            if (!HasProperty(root, nameof(AppSettings.DefaultLanguage)))
+            {
+                Current.DefaultLanguage = Current.Language;
+            }
+
+            if (!HasProperty(root, nameof(AppSettings.DefaultBackend)))
+            {
+                Current.DefaultBackend = Current.ComputeBackend;
+            }
+
+            Current.SpeechModel = Current.DefaultModelId;
+            Current.Language = Current.DefaultLanguage;
+            Current.ComputeBackend = Current.DefaultBackend;
         }
         catch (JsonException exception)
         {
@@ -72,6 +96,11 @@ public sealed partial class JsonSettingsService : ISettingsService, IDisposable
     }
 
     public void Dispose() => _saveLock.Dispose();
+
+    private static bool HasProperty(JsonElement root, string name) =>
+        root.ValueKind == JsonValueKind.Object &&
+        root.EnumerateObject().Any(property =>
+            property.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
     [LoggerMessage(LogLevel.Warning, "Settings file is malformed. RSTT will use safe defaults.")]
     private static partial void LogMalformedSettings(ILogger logger, Exception exception);

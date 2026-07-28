@@ -1,11 +1,18 @@
 namespace RSTT.Core.Models;
 
-/// <summary>Caption state plus only the text that has newly become safe to inject.</summary>
+/// <summary>Caption state and the immutable commits produced by one hypothesis.</summary>
 public sealed record TranscriptUpdate(
-    string StableText,
-    string PendingText,
-    string NewlyStableText,
+    TranscriptSnapshot Snapshot,
+    IReadOnlyList<TranscriptCommit> Commits,
     bool IsFinal,
     string CurrentCaptionText = "",
     string? FinalizedSegmentText = null,
-    long Sequence = 0);
+    long Sequence = 0,
+    SessionGenerationId SessionGenerationId = default)
+{
+    public string StableText => Snapshot.ConfirmedHistory;
+
+    public string PendingText => Snapshot.PendingCurrent;
+
+    public string NewlyStableText => string.Concat(Commits.Select(static commit => commit.Text));
+}

@@ -32,7 +32,8 @@ public sealed class CaptionHistory
                     update.FinalizedSegmentText,
                     true,
                     DateTimeOffset.UtcNow,
-                    update.Sequence));
+                    update.Sequence,
+                    update.SessionGenerationId));
                 while (_finalSegments.Count > _capacity)
                 {
                     _finalSegments.Dequeue();
@@ -47,7 +48,8 @@ public sealed class CaptionHistory
                     update.CurrentCaptionText,
                     false,
                     DateTimeOffset.UtcNow,
-                    update.Sequence);
+                    update.Sequence,
+                    update.SessionGenerationId);
             }
             else
             {

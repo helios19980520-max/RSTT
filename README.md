@@ -10,6 +10,9 @@ RSTT captures the selected Windows playback device with WASAPI loopback, recogni
 - Input-driven, bounded WASAPI → resample → ASR pipeline
 - Cache-aware Nemotron Streaming English as the recommended realtime model
 - Available Nemotron 3.5 multilingual and Parakeet Unified alternatives
+- Actionable Qwen3-ASR 0.6B INT8 and Whisper Large v3 Turbo Preview profiles
+- Isolated versioned sherpa and whisper.cpp CPU workers
+- Optional app-local CUDA 12 Accelerator Pack for sherpa and Whisper
 - Resumable, verified in-app downloads with live progress, rate, and ETA
 - Automatic compute probing with honest CPU fallback
 - Movable, resizable, persistent, no-activate Caption V2 overlay
@@ -21,7 +24,7 @@ RSTT captures the selected Windows playback device with WASAPI loopback, recogni
 
 - Windows 10 or Windows 11, x64
 - A working Windows playback device
-- Approximately 1.5 GB free for the app, one model, and download headroom
+- Approximately 2–6 GB free for the app, selected models, and download headroom
 - Internet access only when downloading a model
 - .NET 8 SDK only when building from source
 
@@ -50,16 +53,27 @@ Downloads are resumable. RSTT does not mark a model ready until every required a
 | Nemotron Streaming English 0.6B INT8 | Available, recommended | English | Native/cache-aware | Balanced, 560 ms |
 | Nemotron 3.5 Streaming Multilingual 0.6B INT8 | Available | 19 transcription-ready locales | Native/cache-aware | Balanced, 560 ms |
 | Parakeet Unified English 0.6B INT8 | Available | English | Buffered | Accurate, 1120 ms |
-| Qwen3-ASR 0.6B INT8 | Coming later | Multilingual | Offline | Not activatable |
-| Whisper Small | Coming later | Multilingual | Planned segmented/VAD | Not activatable |
+| Qwen3-ASR 0.6B INT8 | Preview, actionable | 30 languages + 22 Chinese dialects | Segmented realtime | Silero VAD 200/500 ms |
+| Whisper Large v3 Turbo Q5_0 | Preview, actionable | Multilingual auto/manual | Segmented realtime | Default Whisper profile |
+| Whisper Large v3 Turbo full | Preview, actionable | Multilingual auto/manual | Segmented realtime | Maximum quality |
 
-“Coming later” entries have no download or activation command. Model cards distinguish integration status and do not claim unsupported capabilities. See [Model management](docs/MODELS.md) and the [verified model matrix](docs/MODEL_MATRIX.md).
+Qwen and both Whisper profiles have pinned download validation and real CPU/RTX
+2060 CUDA decode evidence. They remain Preview until the full multilingual,
+accented, quiet, and no-trailing-silence corpus gate passes. Coming-later
+entries have no download or activation command. See [Model
+management](docs/MODELS.md) and the [verified model
+matrix](docs/MODEL_MATRIX.md).
 
 ## Compute backends
 
-The standard RSTT package contains sherpa-onnx's CPU runtime. CPU therefore always works and is the verified backend in this build.
+The standard RSTT package contains isolated sherpa and Whisper CPU workers, so
+it launches without CUDA dependencies.
 
-RSTT detects NVIDIA hardware separately from runtime availability. A CUDA-capable model or an NVIDIA adapter does **not** make CUDA executable by itself. Auto selects CUDA only after a matching provider and its CUDA/cuDNN dependencies pass the runtime probe; otherwise it explains the reason and uses CPU. On the development machine, an RTX 2060 was detected but the installed package remained CPU-only, so all reported acceptance measurements are CPU results.
+The optional Accelerator Pack installs versioned app-local sherpa CUDA
+12.8/cuDNN 9.24 and Whisper CUDA 12 workers. Auto verifies handshake, provider,
+model load, and warmup before selection, terminates a failed CUDA process before
+CPU fallback, and displays `CUDA Active` only after real session inference.
+RTX 2060 CPU/CUDA measurements are recorded in the documentation.
 
 See [Compute backends](docs/COMPUTE_BACKENDS.md) for packaging and fallback details.
 
@@ -69,7 +83,11 @@ Caption V2 keeps bounded finalized segments plus one replaceable partial. It fol
 
 The overlay uses `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` and `ShowActivated=false`. Normal caption updates do not steal keyboard focus.
 
-Typing is intentionally conservative: the current production policy sends endpoint-final text only. Partial hypotheses remain live in captions but cannot create irreversible fragment errors in another application. Text is delivered in ordered UTF-16 batches, the target process is rechecked during each segment, and queued work is discarded when typing is disabled or the session generation changes.
+Typing is intentionally conservative: online models commit stable whole-word
+prefixes with final-tail flush, while offline/VAD models commit final segments.
+Automatic delivery uses fast 64-unit blocks generally and the measured
+single-unit/20 ms compatibility profile only for packaged Windows 11 Notepad.
+The exact HWND is rechecked around every block.
 
 See [Caption behavior](docs/CAPTIONS.md) and [Text injection](docs/TEXT_INJECTION.md).
 
@@ -94,7 +112,7 @@ WASAPI callback
   → bounded raw-packet channel
   → one downmix/resample/meter worker
   → bounded normalized-audio channel
-  → input-driven sherpa-onnx worker
+  → one descriptor-selected isolated sherpa or whisper.cpp worker
   → bounded ordered result channel
   ├─ coalesced WPF/caption publication (20 Hz maximum for partials)
   └─ bounded isolated SendInput worker
@@ -135,16 +153,20 @@ Model artifacts are not bundled in the repository or publish output.
 dotnet restore RSTT.sln
 dotnet build RSTT.sln -c Release --no-restore
 dotnet test RSTT.sln -c Release --no-restore
-dotnet publish src\RSTT.App\RSTT.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts\publish\win-x64-hardened
+dotnet publish src\RSTT.App\RSTT.App.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishProfile=win-x64
+.\scripts\Build-AcceleratorPack.ps1 -Configuration Release -SherpaArchivePath C:\path\to\sherpa-cuda-1.13.4.tar.bz2
 ```
 
 The publish is self-contained and multi-file. Its entry point is:
 
 ```text
-artifacts\publish\win-x64-hardened\RSTT.App.exe
+artifacts\publish\win-x64\RSTT.App.exe
+artifacts\accelerator-pack\RSTT-Accelerator-Pack-1.0.0-win-x64.zip
 ```
 
-The Windows text-injection integration fixture is non-destructive: if an unrelated user-owned Notepad process is already open, the fixture does not close it or type into it.
+The Windows text-injection integration fixture is non-destructive: it always
+uses a uniquely named temporary document and a fresh Notepad HWND. It never
+types into or closes a user document.
 
 ## Privacy and licensing
 

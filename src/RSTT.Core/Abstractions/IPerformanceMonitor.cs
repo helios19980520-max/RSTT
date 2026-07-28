@@ -20,6 +20,12 @@ public interface IPerformanceMonitor
 
     void RecordInjection();
 
+    void RecordInjectionAttempt(
+        int utf16Length,
+        int sendInputCallCount,
+        int queueDepth,
+        bool succeeded);
+
     PerformanceSnapshot GetSnapshot();
 }
 
@@ -63,6 +69,14 @@ public sealed class NullPerformanceMonitor : IPerformanceMonitor
     {
     }
 
+    public void RecordInjectionAttempt(
+        int utf16Length,
+        int sendInputCallCount,
+        int queueDepth,
+        bool succeeded)
+    {
+    }
+
     public PerformanceSnapshot GetSnapshot() => new(
         DateTimeOffset.UtcNow,
         0,
@@ -72,6 +86,10 @@ public sealed class NullPerformanceMonitor : IPerformanceMonitor
         GC.CollectionCount(1),
         GC.CollectionCount(2),
         Environment.ProcessorCount,
+        0,
+        0,
+        0,
+        0,
         0,
         0,
         0,

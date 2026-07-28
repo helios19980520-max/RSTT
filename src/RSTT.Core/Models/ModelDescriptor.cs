@@ -3,6 +3,7 @@ namespace RSTT.Core.Models;
 public enum ModelIntegrationStatus
 {
     Available,
+    Preview,
     Experimental,
     ComingLater,
 }
@@ -62,6 +63,17 @@ public sealed class ModelCapabilities
     public bool SupportsPartialResults { get; init; } = true;
 }
 
+public sealed class VadSegmentationPolicy
+{
+    public int PreRollMs { get; init; } = 200;
+
+    public int PostRollMs { get; init; } = 500;
+
+    public float Threshold { get; init; } = 0.5f;
+
+    public int MaximumSegmentMs { get; init; } = 20_000;
+}
+
 /// <summary>A built-in, offline-available description of one curated speech model integration.</summary>
 public sealed class ModelDescriptor
 {
@@ -116,6 +128,8 @@ public sealed class ModelDescriptor
     public long RecommendedVramBytes { get; init; }
 
     public ModelCapabilities Capabilities { get; init; } = new();
+
+    public VadSegmentationPolicy? VadPolicy { get; init; }
 
     public ModelAccuracyTier AccuracyTier { get; init; }
 

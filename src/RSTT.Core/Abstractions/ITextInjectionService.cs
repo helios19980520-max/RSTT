@@ -1,21 +1,38 @@
+using RSTT.Core.Models;
+
 namespace RSTT.Core.Abstractions;
 
 public interface ITextInjectionService
 {
-    Task<TextInjectionResult> InjectTextAsync(string text, CancellationToken cancellationToken = default);
+    Task<TextInjectionResult> InjectAsync(
+        InjectionRequest request,
+        CancellationToken cancellationToken = default);
 }
 
 public enum TextInjectionStatus
 {
     Success,
-    SelfFocused,
+    Partial,
     TargetChanged,
+    SelfFocused,
     ElevatedTarget,
-    NoTarget,
+    Unavailable,
     Failed,
 }
 
 public sealed record TextInjectionResult(
-    bool Succeeded,
-    string? Message = null,
-    TextInjectionStatus Status = TextInjectionStatus.Success);
+    TextInjectionStatus Status,
+    int ExpectedInputCount,
+    int SentInputCount,
+    int CommittedUtf16Offset,
+    nint TargetWindowHandle,
+    uint TargetProcessId,
+    int Win32Error,
+    string? DiagnosticMessage = null,
+    int Utf16UnitsPerBlock = 0,
+    int SendInputCallCount = 0,
+    int QueueDepthAtEnqueue = 0,
+    string DeliveryProfile = "")
+{
+    public bool Succeeded => Status == TextInjectionStatus.Success;
+}

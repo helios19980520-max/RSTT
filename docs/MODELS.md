@@ -5,10 +5,13 @@ RSTT uses an embedded, versioned ASR catalog. Catalog metadata is available offl
 ## Integration states
 
 - **Available** — the engine path, artifacts, validation, load, and activation are implemented.
-- **Experimental** — executable integration exists but has stated limitations.
+- **Experimental** — descriptor/engine routing exists, but the row remains
+  non-actionable until its pinned artifacts and production validation gates pass.
 - **Coming later** — roadmap metadata only. No download or activation command is exposed.
 
-The current catalog has three Available sherpa-onnx models and two non-activatable roadmap entries. See [MODEL_MATRIX.md](MODEL_MATRIX.md).
+The current catalog has three Available sherpa-onnx models, four non-actionable
+Experimental model-family records, and one Coming-later record. See
+[MODEL_MATRIX.md](MODEL_MATRIX.md).
 
 ## Recommended default
 
@@ -25,7 +28,7 @@ Parakeet remains an installed/available accuracy-oriented English alternative. N
 5. Exact length and SHA-256 are verified.
 6. A generated `model.json` manifest is written only after required files pass.
 7. The staging directory is promoted into the versioned installation directory.
-8. Settings activate the model only after promotion succeeds.
+8. The model becomes available for **Use now** only after promotion succeeds.
 
 Cancellation leaves valid partial data for resume. A failed validation never appears as Ready.
 
@@ -44,7 +47,12 @@ Hugging Face/Xet ETags are not treated as file SHA-256 values. Startup validatio
 
 ## Activation and deletion
 
-Selecting **Use model** stops active recognition first through the normal session lifecycle, resets stabilizer state, loads the chosen verified model, and updates the default only after load succeeds. The UI does not replace native resources underneath an active decode call.
+Selecting **Use now** stops active recognition first through the normal session
+lifecycle, resets stabilizer state, and loads the chosen verified model without
+changing the persisted default. **Set default** is a distinct action. If the user
+switches while listening, RSTT confirms, completes the stop/final-tail flush,
+warms the new model, and restarts only after successful load. The UI does not
+replace native resources underneath an active decode call.
 
 Deleting an active model unloads it first. RSTT selects another valid installed model when possible; otherwise the shell remains usable on the Models page. The confirmation includes the model name and storage size.
 

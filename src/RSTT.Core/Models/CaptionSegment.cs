@@ -5,4 +5,5 @@ public sealed record CaptionSegment(
     string Text,
     bool IsFinal,
     DateTimeOffset Timestamp,
-    long Sequence);
+    long Sequence,
+    SessionGenerationId SessionGenerationId = default);

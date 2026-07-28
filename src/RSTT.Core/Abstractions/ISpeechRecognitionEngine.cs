@@ -8,7 +8,7 @@ public interface ISpeechRecognitionEngine : IAsyncDisposable
 
     ModelInformation ModelInformation { get; }
 
-    event EventHandler<RecognitionResult>? RecognitionResultAvailable;
+    event EventHandler<RecognitionHypothesis>? RecognitionResultAvailable;
 
     Task InitializeAsync(CancellationToken cancellationToken = default);
 

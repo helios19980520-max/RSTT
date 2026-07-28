@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <AssemblyName>RSTT.Speech.Worker</AssemblyName>
+    <DefineConstants>$(DefineConstants);SHERPA_CUDA12</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\RSTT.Sherpa.Worker\Program.cs" Link="Program.cs" />
+    <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" />
+  </ItemGroup>
+</Project>

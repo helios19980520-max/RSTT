@@ -1,8 +1,15 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Reflection;
+using System.Text;
 using System.Windows;
+using System.Windows.Data;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
+using NAudio.Wave;
 using RSTT.App.Infrastructure;
 using RSTT.App.Services;
 using RSTT.Core.Abstractions;
@@ -40,6 +47,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string _toggleInjectionHotkeyError = string.Empty;
     private string _toggleCaptionsHotkeyError = string.Empty;
     private string _computeStatus = "Checking available compute backends…";
+    private string _modelSearchText = string.Empty;
+    private string _selectedModelFilter = "All";
+    private string _diagnosticsText = "Run the self-test to collect system, graphics, CUDA, ASR, audio, and performance status.";
     private AudioDevice? _selectedAudioDevice;
     private ModelInformation? _selectedModel;
     private CaptionSegment? _currentCaption;
@@ -47,6 +57,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private ApplicationState _currentState = ApplicationState.Initializing;
     private ComputeBackend _computeBackend = ComputeBackend.Auto;
     private RecognitionMode _recognitionMode = RecognitionMode.Balanced;
+    private TextInjectionDeliveryMode _textInjectionDeliveryMode =
+        TextInjectionDeliveryMode.Automatic;
     private int _selectedPageIndex;
     private bool _isTextInjectionEnabled = true;
     private bool _isCaptionOverlayEnabled = true;
@@ -60,6 +72,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _isDownloadingModel;
     private bool _isRefreshingDevices;
     private bool _isTestingAudio;
+    private bool _isRunningDiagnostics;
     private bool _isOverlayPreviewing;
     private bool _isInitializing = true;
     private double _captionFontSize = 28;
@@ -115,6 +128,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             UseSelectedModelAsync,
             () => CanUseSelectedModel,
             ReportCommandFailure);
+        SetDefaultModelCommand = new AsyncRelayCommand(
+            SetDefaultModelAsync,
+            () => CanSetSelectedModelDefault,
+            ReportCommandFailure);
         CancelDownloadCommand = new RelayCommand(CancelModelDownload, () => IsDownloadingModel);
         DeleteModelCommand = new AsyncRelayCommand(DeleteModelAsync, () => IsModelReady && !IsDownloadingModel, ReportCommandFailure);
         RetryModelCommand = new AsyncRelayCommand(RetryModelAsync, () => !IsDownloadingModel, ReportCommandFailure);
@@ -123,6 +140,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ClearTranscriptCommand = new RelayCommand(ClearTranscript, () => !string.IsNullOrWhiteSpace(TranscriptText));
         OpenModelsFolderCommand = new RelayCommand(() => OpenFolder(_paths.ModelsDirectory));
         OpenLogsFolderCommand = new RelayCommand(() => OpenFolder(_paths.LogsDirectory));
+        RunDiagnosticsCommand = new AsyncRelayCommand(
+            RunDiagnosticsAsync,
+            () => !IsRunningDiagnostics,
+            ReportCommandFailure);
+        CopyDiagnosticsCommand = new RelayCommand(
+            CopyDiagnostics,
+            () => !string.IsNullOrWhiteSpace(DiagnosticsText));
+        OpenDiagnosticLinkCommand = new ParameterRelayCommand(
+            OpenDiagnosticLink,
+            parameter => parameter is string value &&
+                Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+                uri.Scheme == Uri.UriSchemeHttps);
         NavigateToModelsCommand = new RelayCommand(() => SelectedPageIndex = 2);
         PreviewOverlayCommand = new RelayCommand(ToggleOverlayPreview);
 
@@ -130,13 +159,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _coordinator.TranscriptUpdated += OnTranscriptUpdated;
         _audioCapture.AudioLevelChanged += OnAudioLevelChanged;
         _modelManager.ModelChanged += OnModelChanged;
+        ModelsView = CollectionViewSource.GetDefaultView(Models);
+        ModelsView.Filter = FilterModel;
     }
 
     public ObservableCollection<AudioDevice> AudioDevices { get; } = [];
 
     public ObservableCollection<ModelInformation> Models { get; } = [];
 
+    public ICollectionView ModelsView { get; }
+
     public ObservableCollection<CaptionSegment> CaptionSegments { get; } = [];
+
+    public ObservableCollection<ComputeDiagnosticItem> ComputeDiagnostics { get; } = [];
 
     public AsyncRelayCommand StartStopCommand { get; }
 
@@ -147,6 +182,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand DownloadModelCommand { get; }
 
     public AsyncRelayCommand UseModelCommand { get; }
+
+    public AsyncRelayCommand SetDefaultModelCommand { get; }
 
     public RelayCommand CancelDownloadCommand { get; }
 
@@ -163,6 +200,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public RelayCommand OpenModelsFolderCommand { get; }
 
     public RelayCommand OpenLogsFolderCommand { get; }
+
+    public AsyncRelayCommand RunDiagnosticsCommand { get; }
+
+    public RelayCommand CopyDiagnosticsCommand { get; }
+
+    public ParameterRelayCommand OpenDiagnosticLinkCommand { get; }
 
     public RelayCommand NavigateToModelsCommand { get; }
 
@@ -184,21 +227,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(IsListening));
                 OnPropertyChanged(nameof(IsErrorState));
                 OnPropertyChanged(nameof(StatusLabel));
+                OnPropertyChanged(nameof(LiveHeadline));
+                OnPropertyChanged(nameof(LiveDescription));
+                OnPropertyChanged(nameof(StartStopText));
+                OnPropertyChanged(nameof(StartStopGlyph));
             }
         }
     }
 
-    public string StatusLabel => CurrentState switch
-    {
-        ApplicationState.Listening => "Listening",
-        ApplicationState.Ready => "Ready",
-        ApplicationState.ModelLoading => "Loading model",
-        ApplicationState.ModelDownloading => "Downloading",
-        ApplicationState.ModelMissing => "Setup needed",
-        ApplicationState.Error => "Needs attention",
-        ApplicationState.Stopping => "Stopping",
-        _ => "Starting",
-    };
+    public string StatusLabel => CurrentPresentation.Label;
+
+    public string LiveHeadline => CurrentPresentation.Headline;
+
+    public string LiveDescription => CurrentPresentation.Description;
 
     public bool IsListening => CurrentState == ApplicationState.Listening;
 
@@ -242,9 +283,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool HasTranscript => !string.IsNullOrWhiteSpace(TranscriptText);
 
-    public string StartStopText => IsListening ? "Stop listening" : "Start listening";
+    public string StartStopText => CurrentPresentation.ButtonLabel;
 
-    public string StartStopGlyph => IsListening ? "\uE71A" : "\uE768";
+    public string StartStopGlyph => CurrentPresentation.ButtonGlyph;
+
+    public string ActiveRuntimeLabel =>
+        _performanceSnapshot?.Provider switch
+        {
+            "cuda" or "cuda-active" => "CUDA Active",
+            "cuda-ready" => "CUDA ready · awaiting decode",
+            "cpu" => "CPU Active",
+            { Length: > 0 } provider => provider,
+            _ => "Runtime not started",
+        };
+
+    public string ActiveLanguageLabel =>
+        ActiveModel?.Descriptor is { Languages.Count: 1 } descriptor
+            ? descriptor.Languages[0]
+            : _settings.Current.DefaultLanguage;
+
+    public string TargetApplicationLabel => IsListening
+        ? IsTextInjectionEnabled
+            ? "Focused external app · exact HWND checked per commit"
+            : "Typing disabled"
+        : "Typing paused";
 
     public string ActionMessage
     {
@@ -266,6 +328,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _isTextInjectionEnabled, value))
             {
                 _settings.Current.TextInjectionEnabled = value;
+                OnPropertyChanged(nameof(TargetApplicationLabel));
                 PersistSettings();
             }
         }
@@ -279,6 +342,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _isCaptionOverlayEnabled, value))
             {
                 _settings.Current.CaptionOverlayEnabled = value;
+                PersistSettings();
+            }
+        }
+    }
+
+    public TextInjectionDeliveryMode TextInjectionDeliveryMode
+    {
+        get => _textInjectionDeliveryMode;
+        set
+        {
+            if (SetProperty(ref _textInjectionDeliveryMode, value))
+            {
+                _settings.Current.TextInjectionDeliveryMode = value;
+                ActionMessage = value switch
+                {
+                    TextInjectionDeliveryMode.Automatic =>
+                        "Automatic uses the compatibility profile for modern Notepad.",
+                    TextInjectionDeliveryMode.Compatibility =>
+                        "Compatibility uses measured single-unit paired Unicode pacing for modern Notepad.",
+                    _ => "Direct uses unpaced Unicode blocks.",
+                };
                 PersistSettings();
             }
         }
@@ -593,6 +677,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _computeBackend, value))
             {
                 _settings.Current.ComputeBackend = value;
+                _settings.Current.DefaultBackend = value;
                 ActionMessage = "Compute changes take effect when the model is reloaded.";
                 PersistSettings();
                 _ = RefreshComputeStatusAsync();
@@ -614,16 +699,74 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string DefaultLanguage
+    {
+        get => _settings.Current.DefaultLanguage;
+        set
+        {
+            var normalized = string.IsNullOrWhiteSpace(value)
+                ? "auto"
+                : value.Trim().ToLowerInvariant();
+            if (string.Equals(
+                    _settings.Current.DefaultLanguage,
+                    normalized,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _settings.Current.DefaultLanguage = normalized;
+            _settings.Current.Language = normalized;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ActiveLanguageLabel));
+            ActionMessage = "Language changes take effect when the model is reloaded.";
+            PersistSettings();
+        }
+    }
+
     public IReadOnlyList<ComputeBackend> ComputeBackends { get; } =
         Enum.GetValues<ComputeBackend>();
 
     public IReadOnlyList<RecognitionMode> RecognitionModes { get; } =
         Enum.GetValues<RecognitionMode>();
 
+    public IReadOnlyList<TextInjectionDeliveryMode> TextInjectionDeliveryModes { get; } =
+        Enum.GetValues<TextInjectionDeliveryMode>();
+
+    public IReadOnlyList<string> RecognitionLanguages { get; } =
+    [
+        "auto", "en", "zh", "yue", "ja", "ko", "de", "es", "fr", "it",
+        "pt", "ru", "ar", "hi", "th", "vi", "tr", "pl", "nl", "uk",
+    ];
+
     public string ComputeStatus
     {
         get => _computeStatus;
         private set => SetProperty(ref _computeStatus, value);
+    }
+
+    public string DiagnosticsText
+    {
+        get => _diagnosticsText;
+        private set
+        {
+            if (SetProperty(ref _diagnosticsText, value))
+            {
+                CopyDiagnosticsCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsRunningDiagnostics
+    {
+        get => _isRunningDiagnostics;
+        private set
+        {
+            if (SetProperty(ref _isRunningDiagnostics, value))
+            {
+                RunDiagnosticsCommand.RaiseCanExecuteChanged();
+            }
+        }
     }
 
     public PerformanceSnapshot? PerformanceSnapshot
@@ -634,6 +777,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _performanceSnapshot, value))
             {
                 OnPropertyChanged(nameof(PerformanceSummary));
+                OnPropertyChanged(nameof(ActiveRuntimeLabel));
             }
         }
     }
@@ -693,18 +837,67 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string ModelSearchText
+    {
+        get => _modelSearchText;
+        set
+        {
+            if (SetProperty(ref _modelSearchText, value))
+            {
+                ModelsView.Refresh();
+            }
+        }
+    }
+
+    public string SelectedModelFilter
+    {
+        get => _selectedModelFilter;
+        set
+        {
+            if (SetProperty(ref _selectedModelFilter, value))
+            {
+                ModelsView.Refresh();
+            }
+        }
+    }
+
+    public IReadOnlyList<string> ModelFilters { get; } =
+    [
+        "All",
+        "Installed",
+        "Streaming",
+        "Multilingual",
+        "CUDA-capable",
+    ];
+
     public bool IsModelReady => SelectedModel?.IsInstalled == true && SelectedModel.Availability == ModelAvailability.Ready;
 
     public bool CanDownloadSelectedModel =>
-        SelectedModel?.Descriptor?.IntegrationStatus == ModelIntegrationStatus.Available &&
+        SelectedModel?.Descriptor?.IntegrationStatus is
+            ModelIntegrationStatus.Available or ModelIntegrationStatus.Preview &&
         !IsModelReady &&
         !IsDownloadingModel;
 
     public bool CanUseSelectedModel =>
         IsModelReady &&
         SelectedModel?.IsActive != true &&
-        !IsListening &&
         !IsDownloadingModel;
+
+    public bool CanSetSelectedModelDefault =>
+        IsModelReady &&
+        SelectedModel is not null &&
+        !string.Equals(
+            SelectedModel.Id,
+            _settings.Current.DefaultModelId,
+            StringComparison.OrdinalIgnoreCase) &&
+        !IsDownloadingModel;
+
+    public bool IsSelectedModelDefault =>
+        SelectedModel is not null &&
+        string.Equals(
+            SelectedModel.Id,
+            _settings.Current.DefaultModelId,
+            StringComparison.OrdinalIgnoreCase);
 
     public string ModelIntegrationText =>
         SelectedModel?.Descriptor?.IntegrationStatus switch
@@ -714,6 +907,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 : IsModelReady
                     ? "Installed"
                     : "Available",
+            ModelIntegrationStatus.Preview => SelectedModel.IsActive
+                ? "Active preview"
+                : IsModelReady
+                    ? "Installed preview"
+                    : "Preview · validation evidence incomplete",
             ModelIntegrationStatus.Experimental => "Experimental",
             ModelIntegrationStatus.ComingLater => "Coming later",
             _ => "Unknown",
@@ -947,6 +1145,189 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task RunDiagnosticsAsync()
+    {
+        IsRunningDiagnostics = true;
+        try
+        {
+            var model = ActiveModel ?? SelectedModel;
+            var devices = await _audioCapture.GetOutputDevicesAsync().ConfigureAwait(true);
+            var modelValid = _modelManager.TryValidateModel(out var validatedModel);
+            var selfTest = await RunSpeechSelfTestAsync(
+                    model?.Descriptor,
+                    modelValid)
+                .ConfigureAwait(true);
+            // Fetch the report after the isolated decode so provider, recognizer,
+            // warmup, fallback, and active-inference evidence is visible immediately.
+            var compute = await _computeDevices
+                .GetDiagnosticsAsync(
+                    ComputeBackend,
+                    model?.Descriptor)
+                .ConfigureAwait(true);
+            var performance = _performance.GetSnapshot();
+            var builder = new StringBuilder();
+            ComputeDiagnostics.Clear();
+            foreach (var layer in compute.Layers)
+            {
+                ComputeDiagnostics.Add(ComputeDiagnosticItem.FromLayer(layer));
+            }
+            void AppendInvariant(FormattableString line) =>
+                builder.AppendLine(line.ToString(CultureInfo.InvariantCulture));
+            builder.AppendLine("RSTT Diagnostics");
+            AppendInvariant($"Generated: {DateTimeOffset.Now:O}");
+            builder.AppendLine();
+            builder.AppendLine("[System]");
+            AppendInvariant($"App: {Assembly.GetExecutingAssembly().GetName().Version}");
+            AppendInvariant($"OS: {Environment.OSVersion.VersionString}");
+            AppendInvariant($"Runtime: {Environment.Version}");
+            AppendInvariant($"Process: {(Environment.Is64BitProcess ? "x64" : "x86")}");
+            AppendInvariant($"Logical processors: {Environment.ProcessorCount}");
+            builder.AppendLine();
+            builder.AppendLine("[Graphics and CUDA]");
+            foreach (var layer in compute.Layers)
+            {
+                AppendInvariant(
+                    $"{layer.Layer}: {(layer.IsReady ? "Ready" : "Unavailable")} - {layer.Status}");
+            }
+
+            AppendInvariant($"Selected backend: {compute.SelectedBackend}");
+            AppendInvariant($"Active label: {ActiveRuntimeLabel}");
+            builder.AppendLine();
+            builder.AppendLine("[ASR]");
+            AppendInvariant($"Model: {model?.DisplayName ?? "None"}");
+            AppendInvariant($"Model ID: {model?.Id ?? "None"}");
+            AppendInvariant($"Revision: {model?.Descriptor?.Revision ?? "Unknown"}");
+            AppendInvariant($"Mode: {model?.Descriptor?.StreamingMode.ToString() ?? "Unknown"}");
+            AppendInvariant($"Language: {ActiveLanguageLabel}");
+            AppendInvariant($"Installation valid: {modelValid}");
+            AppendInvariant($"Validation status: {validatedModel.StatusMessage ?? "None"}");
+            AppendInvariant($"Self-test: {selfTest}");
+            builder.AppendLine();
+            builder.AppendLine("[Audio]");
+            AppendInvariant($"Selected: {SelectedAudioDeviceName}");
+            AppendInvariant($"Detected output devices: {devices.Count}");
+            AppendInvariant($"Capture active: {_audioCapture.IsCapturing}");
+            builder.AppendLine();
+            builder.AppendLine("[Performance]");
+            AppendInvariant($"Provider: {performance.Provider}");
+            AppendInvariant($"CPU: {performance.ProcessCpuPercent:N2}%");
+            AppendInvariant($"RTF: {performance.RealtimeFactor:N3}");
+            AppendInvariant($"Decode P50/P95/max: {performance.DecodeP50Ms:N1}/{performance.DecodeP95Ms:N1}/{performance.DecodeMaxMs:N1} ms");
+            AppendInvariant($"Audio queue: {performance.AudioQueueDurationMs:N1} ms");
+            AppendInvariant($"Injection rate: {performance.InjectionHz:N2}/s");
+            AppendInvariant($"Average injection length: {performance.AverageInjectionUtf16Length:N1} UTF-16 units");
+            AppendInvariant($"SendInput calls: {performance.SendInputCallsPerSecond:N2}/s");
+            AppendInvariant($"Injection queue high-watermark: {performance.InjectionQueueHighWatermark}");
+            AppendInvariant($"Injection failures: {performance.InjectionFailures}");
+            AppendInvariant($"Working set: {performance.WorkingSetBytes / 1024d / 1024d:N1} MiB");
+            builder.AppendLine();
+            builder.AppendLine("Transcript content: excluded");
+            DiagnosticsText = builder.ToString();
+            LogDiagnosticsCompleted(
+                _logger,
+                ActiveRuntimeLabel,
+                performance.Provider,
+                selfTest.StartsWith("Ready.", StringComparison.Ordinal),
+                transcriptExcluded: true);
+            ActionMessage = "Diagnostics self-test completed without including transcript content.";
+        }
+        finally
+        {
+            IsRunningDiagnostics = false;
+        }
+    }
+
+    private async Task<string> RunSpeechSelfTestAsync(
+        ModelDescriptor? descriptor,
+        bool modelValid)
+    {
+        if (IsListening)
+        {
+            return "Not tested while a live session is active.";
+        }
+
+        if (!modelValid || descriptor is null)
+        {
+            return "Not tested because the selected model installation is not valid.";
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        try
+        {
+            var samples = ReadSelfTestAudio();
+            var finalResults = await _coordinator
+                .RunSpeechSelfTestAsync(samples, timeout.Token)
+                .ConfigureAwait(true);
+            return finalResults > 0
+                ? $"Ready. Isolated worker handshake, model load, warmup, and licensed-audio decode completed; {finalResults} final result(s)."
+                : "Failed: the worker completed without a final transcription result.";
+        }
+        catch (OperationCanceledException)
+        {
+            return "Failed: the isolated self-test exceeded two minutes.";
+        }
+        catch (Exception exception)
+        {
+            return $"Failed: {exception.Message}";
+        }
+    }
+
+    private static float[] ReadSelfTestAudio()
+    {
+        var path = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "Audio",
+            "jfk.wav");
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException(
+                "The licensed diagnostics audio asset is missing.",
+                path);
+        }
+
+        using var reader = new WaveFileReader(path);
+        if (reader.WaveFormat.SampleRate != AudioChunk.SampleRate ||
+            reader.WaveFormat.Channels != 1)
+        {
+            throw new InvalidDataException(
+                $"Diagnostics audio must be 16 kHz mono; detected {reader.WaveFormat}.");
+        }
+
+        var provider = reader.ToSampleProvider();
+        var samples = new List<float>(
+            checked((int)(reader.Length / Math.Max(1, reader.BlockAlign))));
+        var buffer = new float[AudioChunk.SampleRate];
+        int read;
+        while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            samples.AddRange(buffer.AsSpan(0, read).ToArray());
+        }
+
+        return samples.ToArray();
+    }
+
+    private void CopyDiagnostics()
+    {
+        System.Windows.Clipboard.SetText(DiagnosticsText);
+        ActionMessage = "Diagnostics copied without transcript content.";
+    }
+
+    private static void OpenDiagnosticLink(object? parameter)
+    {
+        if (parameter is not string value ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps)
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+        {
+            UseShellExecute = true,
+        });
+    }
+
     private async Task TestAudioAsync()
     {
         if (IsTestingAudio || IsListening)
@@ -1023,6 +1404,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             await _modelManager.DownloadAsync(SelectedModel.Id, progress, _modelDownloadCancellation.Token).ConfigureAwait(true);
+            await _modelManager.SelectAsync(SelectedModel.Id, _modelDownloadCancellation.Token).ConfigureAwait(true);
             RefreshModels();
             DownloadProgress = 100;
             DownloadProgressText = "Verified and installed";
@@ -1053,10 +1435,46 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         var modelName = SelectedModel.DisplayName;
-        await _modelManager.SelectAsync(SelectedModel.Id).ConfigureAwait(true);
+        var modelId = SelectedModel.Id;
+        var restart = IsListening;
+        if (restart)
+        {
+            var choice = System.Windows.MessageBox.Show(
+                $"Switch to {modelName}? RSTT will finish the current words, load and warm the model, then resume listening.",
+                "Switch recognition model",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Information);
+            if (choice != MessageBoxResult.OK)
+            {
+                return;
+            }
+
+            await _coordinator.StopAsync().ConfigureAwait(true);
+        }
+
+        await _modelManager.SelectAsync(modelId).ConfigureAwait(true);
         await _coordinator.ReloadModelAsync().ConfigureAwait(true);
+        if (restart)
+        {
+            await _coordinator.StartAsync().ConfigureAwait(true);
+        }
+
+        RefreshModels(modelId);
+        ActionMessage = $"{modelName} is now active" +
+            (restart ? " and listening resumed." : ".");
+    }
+
+    private async Task SetDefaultModelAsync()
+    {
+        if (SelectedModel is null || !CanSetSelectedModelDefault)
+        {
+            return;
+        }
+
+        var modelName = SelectedModel.DisplayName;
+        await _modelManager.SetDefaultAsync(SelectedModel.Id).ConfigureAwait(true);
         RefreshModels(SelectedModel.Id);
-        ActionMessage = $"{modelName} is now the active recognition model.";
+        ActionMessage = $"{modelName} will be used by default on the next launch.";
     }
 
     private void CancelModelDownload() => _modelDownloadCancellation?.Cancel();
@@ -1166,6 +1584,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void ApplySettings(AppSettings settings)
     {
         _isTextInjectionEnabled = settings.TextInjectionEnabled;
+        _textInjectionDeliveryMode = settings.TextInjectionDeliveryMode;
         _isCaptionOverlayEnabled = settings.CaptionOverlayEnabled;
         _minimizeToTray = settings.MinimizeToTray;
         _startMinimized = settings.StartMinimized;
@@ -1182,7 +1601,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _captionLineSpacing = Math.Clamp(settings.CaptionLineSpacing, 1, 1.8);
         _captionShowStatusIndicator = settings.CaptionShowStatusIndicator;
         _captionShowStableTextOnly = settings.CaptionShowStableTextOnly;
-        _computeBackend = settings.ComputeBackend;
+        _computeBackend = settings.DefaultBackend;
         _recognitionMode = settings.RecognitionMode;
         _toggleListeningHotkey = settings.ToggleListeningHotkey;
         _toggleInjectionHotkey = settings.ToggleInjectionHotkey;
@@ -1197,9 +1616,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         destination.SpeechModel = source.SpeechModel;
         destination.Language = source.Language;
         destination.ComputeBackend = source.ComputeBackend;
+        destination.DefaultModelId = source.DefaultModelId;
+        destination.DefaultProfileId = source.DefaultProfileId;
+        destination.DefaultLanguage = source.DefaultLanguage;
+        destination.DefaultBackend = source.DefaultBackend;
         destination.RecognitionMode = source.RecognitionMode;
         destination.CpuThreadLimit = source.CpuThreadLimit;
         destination.TextInjectionEnabled = source.TextInjectionEnabled;
+        destination.TextInjectionDeliveryMode = source.TextInjectionDeliveryMode;
         destination.CaptionOverlayEnabled = source.CaptionOverlayEnabled;
         destination.StartMinimized = source.StartMinimized;
         destination.MinimizeToTray = source.MinimizeToTray;
@@ -1223,16 +1647,50 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshModels(string? preferredModelId = null)
     {
-        var selectedId = preferredModelId ?? SelectedModel?.Id ?? _settings.Current.SpeechModel;
+        var selectedId = preferredModelId ?? SelectedModel?.Id ?? _settings.Current.DefaultModelId;
         Models.Clear();
         foreach (var model in _modelManager.GetAvailableModels())
         {
             Models.Add(model);
         }
+        ModelsView.Refresh();
 
         SelectedModel = Models.FirstOrDefault(model => string.Equals(model.Id, selectedId, StringComparison.OrdinalIgnoreCase))
             ?? Models.FirstOrDefault(model => model.IsActive)
             ?? Models.FirstOrDefault();
+    }
+
+    private bool FilterModel(object item)
+    {
+        if (item is not ModelInformation model)
+        {
+            return false;
+        }
+
+        var searchMatches = string.IsNullOrWhiteSpace(ModelSearchText) ||
+            model.DisplayName.Contains(ModelSearchText, StringComparison.CurrentCultureIgnoreCase) ||
+            model.Description.Contains(ModelSearchText, StringComparison.CurrentCultureIgnoreCase) ||
+            (model.Descriptor?.Family.Contains(
+                ModelSearchText,
+                StringComparison.CurrentCultureIgnoreCase) ?? false) ||
+            (model.Descriptor?.LanguageDescription.Contains(
+                ModelSearchText,
+                StringComparison.CurrentCultureIgnoreCase) ?? false);
+        if (!searchMatches)
+        {
+            return false;
+        }
+
+        return SelectedModelFilter switch
+        {
+            "Installed" => model.IsInstalled,
+            "Streaming" => model.Descriptor?.StreamingMode is
+                SpeechStreamingMode.NativeStreaming or
+                SpeechStreamingMode.BufferedStreaming,
+            "Multilingual" => (model.Descriptor?.Languages.Count ?? 0) > 2,
+            "CUDA-capable" => model.Descriptor?.CudaSupported == true,
+            _ => true,
+        };
     }
 
     private void OnStateChanged(object? sender, ApplicationStateSnapshot state)
@@ -1287,6 +1745,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(StartStopText));
         OnPropertyChanged(nameof(StartStopGlyph));
         OnPropertyChanged(nameof(IsListening));
+        OnPropertyChanged(nameof(TargetApplicationLabel));
+        OnPropertyChanged(nameof(LiveHeadline));
+        OnPropertyChanged(nameof(LiveDescription));
         StartStopCommand.RaiseCanExecuteChanged();
     }
 
@@ -1316,8 +1777,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ModelLicenseText));
         OnPropertyChanged(nameof(ModelLanguagesText));
         OnPropertyChanged(nameof(ModelBackendText));
+        OnPropertyChanged(nameof(CanSetSelectedModelDefault));
+        OnPropertyChanged(nameof(IsSelectedModelDefault));
+        OnPropertyChanged(nameof(ActiveLanguageLabel));
         DownloadModelCommand.RaiseCanExecuteChanged();
         UseModelCommand.RaiseCanExecuteChanged();
+        SetDefaultModelCommand.RaiseCanExecuteChanged();
         CancelDownloadCommand.RaiseCanExecuteChanged();
         DeleteModelCommand.RaiseCanExecuteChanged();
         RetryModelCommand.RaiseCanExecuteChanged();
@@ -1367,12 +1832,74 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private StatePresentation CurrentPresentation =>
+        CurrentState switch
+        {
+            ApplicationState.Listening => new(
+                "Listening",
+                "Listening and transcribing",
+                IsTextInjectionEnabled
+                    ? "Stable commits are typed into the exact focused window."
+                    : "Captions are live; typing is disabled.",
+                "Stop listening",
+                "\uE71A"),
+            ApplicationState.Ready => new(
+                "Ready",
+                "Ready to listen",
+                "Your local model is loaded and no audio is being captured.",
+                "Start listening",
+                "\uE768"),
+            ApplicationState.ModelLoading => new(
+                "Loading model",
+                "Loading and warming the model",
+                "Recognition will be available after the local runtime is ready.",
+                "Start listening",
+                "\uE768"),
+            ApplicationState.ModelDownloading => new(
+                "Downloading",
+                "Downloading a verified model",
+                "Progress, validation, and retry state are shown on the Models page.",
+                "Start listening",
+                "\uE768"),
+            ApplicationState.ModelMissing => new(
+                "Setup needed",
+                "Install a supported model",
+                "Choose a production-supported local model on the Models page.",
+                "Start listening",
+                "\uE768"),
+            ApplicationState.Stopping => new(
+                "Stopping",
+                "Finishing final words",
+                "Audio, recognition results, commits, and typing are draining in order.",
+                "Stopping…",
+                "\uE71A"),
+            ApplicationState.Error => new(
+                "Needs attention",
+                "Recognition needs attention",
+                StatusText,
+                "Start listening",
+                "\uE768"),
+            _ => new(
+                "Starting",
+                "Preparing local transcription",
+                "RSTT is checking your audio, model, and runtime.",
+                "Start listening",
+                "\uE768"),
+        };
+
     private static string FormatDuration(TimeSpan duration) =>
         duration.TotalHours >= 1
             ? $"{duration.TotalHours:N1} h"
             : duration.TotalMinutes >= 1
                 ? $"{duration.TotalMinutes:N0} min"
                 : $"{Math.Max(1, duration.TotalSeconds):N0} s";
+
+    private sealed record StatePresentation(
+        string Label,
+        string Headline,
+        string Description,
+        string ButtonLabel,
+        string ButtonGlyph);
 
     private async Task PersistSettingsAsync(CancellationToken cancellationToken)
     {
@@ -1425,6 +1952,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [LoggerMessage(LogLevel.Warning, "Output device enumeration failed.")]
     private static partial void LogAudioDeviceEnumerationFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        LogLevel.Information,
+        "Diagnostics completed: runtime={Runtime}, provider={Provider}, self-test ready={SelfTestReady}, transcript excluded={TranscriptExcluded}.")]
+    private static partial void LogDiagnosticsCompleted(
+        ILogger logger,
+        string runtime,
+        string provider,
+        bool selfTestReady,
+        bool transcriptExcluded);
 
     [LoggerMessage(LogLevel.Warning, "Settings could not be saved.")]
     private static partial void LogSettingsSaveFailed(ILogger logger, Exception exception);

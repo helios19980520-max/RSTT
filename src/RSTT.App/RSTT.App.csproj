@@ -16,7 +16,57 @@
     <ProjectReference Include="..\RSTT.Speech\RSTT.Speech.csproj" />
     <ProjectReference Include="..\RSTT.Input\RSTT.Input.csproj" />
     <ProjectReference Include="..\RSTT.Infrastructure\RSTT.Infrastructure.csproj" />
+    <ProjectReference Include="..\RSTT.Whisper.Worker\RSTT.Whisper.Worker.csproj"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\RSTT.Sherpa.Worker\RSTT.Sherpa.Worker.csproj"
+                      ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\Audio\jfk.wav">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="Assets\Audio\NOTICE.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <Target Name="CopyWhisperCpuWorker" AfterTargets="Build">
+    <ItemGroup>
+      <WhisperCpuWorkerFiles Include="$(MSBuildThisFileDirectory)..\RSTT.Whisper.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WhisperCpuWorkerFiles)"
+          DestinationFiles="@(WhisperCpuWorkerFiles->'$(OutDir)workers\whisper-cpu\1.9.1\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopySherpaCpuWorker" AfterTargets="Build">
+    <ItemGroup>
+      <SherpaCpuWorkerFiles Include="$(MSBuildThisFileDirectory)..\RSTT.Sherpa.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SherpaCpuWorkerFiles)"
+          DestinationFiles="@(SherpaCpuWorkerFiles->'$(OutDir)workers\sherpa-cpu\1.13.4\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="IncludeWhisperCpuWorkerInPublish"
+          BeforeTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <WhisperCpuWorkerPublishFiles Include="$(MSBuildThisFileDirectory)..\RSTT.Whisper.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
+      <ResolvedFileToPublish Include="@(WhisperCpuWorkerPublishFiles)">
+        <RelativePath>workers\whisper-cpu\1.9.1\%(WhisperCpuWorkerPublishFiles.RecursiveDir)%(WhisperCpuWorkerPublishFiles.Filename)%(WhisperCpuWorkerPublishFiles.Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+  <Target Name="IncludeSherpaCpuWorkerInPublish"
+          BeforeTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <SherpaCpuWorkerPublishFiles Include="$(MSBuildThisFileDirectory)..\RSTT.Sherpa.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
+      <ResolvedFileToPublish Include="@(SherpaCpuWorkerPublishFiles)">
+        <RelativePath>workers\sherpa-cpu\1.13.4\%(SherpaCpuWorkerPublishFiles.RecursiveDir)%(SherpaCpuWorkerPublishFiles.Filename)%(SherpaCpuWorkerPublishFiles.Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>

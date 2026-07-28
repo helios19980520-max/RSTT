@@ -36,6 +36,7 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
     private readonly object _stateGate = new();
     private readonly Dictionary<string, ModelAvailability> _transientStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _transientMessages = new(StringComparer.OrdinalIgnoreCase);
+    private string? _activeModelId;
 
     public LocalModelManager(IAppPaths paths, ILogger<LocalModelManager> logger)
         : this(paths, null, new JsonModelCatalog(), logger)
@@ -101,10 +102,10 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
         throw new InvalidOperationException(message);
     }
 
-    public async Task SelectAsync(string modelId, CancellationToken cancellationToken = default)
+    public Task SelectAsync(string modelId, CancellationToken cancellationToken = default)
     {
         var model = _catalog.GetById(modelId);
-        if (model.IntegrationStatus != ModelIntegrationStatus.Available)
+        if (!IsActionable(model))
         {
             throw new InvalidOperationException($"{model.DisplayName} is {FormatIntegrationStatus(model.IntegrationStatus)} and cannot be activated.");
         }
@@ -114,17 +115,46 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
             throw new InvalidOperationException($"{model.DisplayName} is not ready: {message}");
         }
 
-        if (_settings is not null)
-        {
-            _settings.Current.SpeechModel = model.Id;
-            await _settings.SaveAsync(cancellationToken).ConfigureAwait(false);
-        }
-
+        cancellationToken.ThrowIfCancellationRequested();
+        _activeModelId = model.Id;
         ModelChanged?.Invoke(this, GetModelInformation(model));
+        return Task.CompletedTask;
     }
 
-    public Task SetDefaultAsync(string modelId, CancellationToken cancellationToken = default) =>
-        SelectAsync(modelId, cancellationToken);
+    public async Task SetDefaultAsync(
+        string modelId,
+        CancellationToken cancellationToken = default)
+    {
+        var model = _catalog.GetById(modelId);
+        if (!IsActionable(model))
+        {
+            throw new InvalidOperationException(
+                $"{model.DisplayName} cannot be the default because it is {FormatIntegrationStatus(model.IntegrationStatus)}.");
+        }
+
+        if (!TryGetInstallation(model, out _, out var message))
+        {
+            throw new InvalidOperationException(
+                $"{model.DisplayName} cannot be the default: {message}");
+        }
+
+        if (_settings is null)
+        {
+            return;
+        }
+
+        _settings.Current.DefaultModelId = model.Id;
+        _settings.Current.DefaultProfileId = model.LatencyProfiles
+            .FirstOrDefault(profile =>
+                profile.Id.Contains("balanced", StringComparison.OrdinalIgnoreCase))?.Id
+            ?? (model.LatencyProfiles.Count > 0
+                ? model.LatencyProfiles[0].Id
+                : null)
+            ?? string.Empty;
+        _settings.Current.SpeechModel = model.Id;
+        await _settings.SaveAsync(cancellationToken).ConfigureAwait(false);
+        ModelChanged?.Invoke(this, GetModelInformation(model));
+    }
 
     public async Task DownloadAsync(
         string modelId,
@@ -132,7 +162,7 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
         CancellationToken cancellationToken = default)
     {
         var model = _catalog.GetById(modelId);
-        if (model.IntegrationStatus != ModelIntegrationStatus.Available)
+        if (!IsActionable(model))
         {
             throw new InvalidOperationException($"{model.DisplayName} is not downloadable because its integration is {FormatIntegrationStatus(model.IntegrationStatus)}.");
         }
@@ -161,6 +191,12 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 var artifact = model.Artifacts[fileIndex];
                 var stagedPath = Path.Combine(stagingDirectory, artifact.FileName);
+                var stagedParent = Path.GetDirectoryName(stagedPath);
+                if (!string.IsNullOrWhiteSpace(stagedParent))
+                {
+                    Directory.CreateDirectory(stagedParent);
+                }
+
                 if (await GetFileValidationErrorAsync(stagedPath, artifact, cancellationToken).ConfigureAwait(false) is null)
                 {
                     completedBytes += artifact.ExpectedBytes;
@@ -235,7 +271,6 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
 
             if (_settings is not null)
             {
-                _settings.Current.SpeechModel = model.Id;
                 _settings.Current.HasCompletedOnboarding = true;
                 await _settings.SaveAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -301,7 +336,7 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
             }
         }
 
-        if (model.IntegrationStatus != ModelIntegrationStatus.Available)
+        if (!IsActionable(model))
         {
             return CreateInformation(
                 model,
@@ -323,7 +358,7 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
         out ModelInstallation installation,
         out string message)
     {
-        if (model.IntegrationStatus != ModelIntegrationStatus.Available)
+        if (!IsActionable(model))
         {
             installation = default!;
             message = FormatIntegrationStatus(model.IntegrationStatus);
@@ -401,6 +436,20 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
                     message = $"Model file '{expected.Key}' was installed from an unrecognized revision.";
                     return false;
                 }
+            }
+
+            if (string.Equals(model.Engine, "offline-qwen3-asr", StringComparison.OrdinalIgnoreCase))
+            {
+                var tokenizerDirectory = Path.GetFullPath(Path.Combine(modelDirectory, "tokenizer"));
+                if (!tokenizerDirectory.StartsWith(modelRoot, StringComparison.OrdinalIgnoreCase) ||
+                    !Directory.Exists(tokenizerDirectory))
+                {
+                    installation = default!;
+                    message = "The Qwen tokenizer directory is missing or unsafe.";
+                    return false;
+                }
+
+                files["tokenizer"] = tokenizerDirectory;
             }
 
             var profile = model.LatencyProfiles.FirstOrDefault(profile =>
@@ -626,16 +675,16 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
     {
         var models = _catalog.GetModels();
         var requested = models.FirstOrDefault(model =>
-            string.Equals(model.Id, _settings?.Current.SpeechModel, StringComparison.OrdinalIgnoreCase));
+            string.Equals(model.Id, GetConfiguredModelId(), StringComparison.OrdinalIgnoreCase));
         if (requested is not null &&
-            requested.IntegrationStatus == ModelIntegrationStatus.Available &&
+            IsActionable(requested) &&
             TryGetInstallation(requested, out _, out _))
         {
             return requested;
         }
 
         var installed = models
-            .Where(model => model.IntegrationStatus == ModelIntegrationStatus.Available)
+            .Where(IsActionable)
             .OrderByDescending(model => model.IsRecommended)
             .FirstOrDefault(model => TryGetInstallation(model, out _, out _));
         return installed
@@ -672,9 +721,11 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
     }
 
     private string GetConfiguredModelId() =>
-        string.IsNullOrWhiteSpace(_settings?.Current.SpeechModel)
+        !string.IsNullOrWhiteSpace(_activeModelId)
+            ? _activeModelId
+            : string.IsNullOrWhiteSpace(_settings?.Current.DefaultModelId)
             ? DefaultModelId
-            : _settings.Current.SpeechModel;
+            : _settings.Current.DefaultModelId;
 
     private string GetModelDirectory(ModelDescriptor model) =>
         Path.Combine(_paths.ModelsDirectory, model.DirectoryName);
@@ -802,10 +853,14 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
     private static string FormatIntegrationStatus(ModelIntegrationStatus status) =>
         status switch
         {
+            ModelIntegrationStatus.Preview => "Preview",
             ModelIntegrationStatus.Experimental => "Experimental",
             ModelIntegrationStatus.ComingLater => "Coming later",
             _ => "Available",
         };
+
+    private static bool IsActionable(ModelDescriptor model) =>
+        model.IntegrationStatus is ModelIntegrationStatus.Available or ModelIntegrationStatus.Preview;
 
     private static string SplitPascalCase(string value) =>
         string.Concat(value.Select((character, index) =>

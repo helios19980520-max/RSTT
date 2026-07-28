@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using RSTT.Core.Abstractions;
+using RSTT.Core.Models;
 using RSTT.Infrastructure;
 using RSTT.Speech;
 using Xunit;
@@ -52,6 +53,42 @@ public sealed class JsonSettingsServiceTests
 
             Assert.Equal(LocalModelManager.DefaultModelId, service.Current.SpeechModel);
             Assert.True(service.Current.TextInjectionEnabled);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LegacySpeechSettingsMigrateToIndependentDefaults()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"rstt-settings-{Guid.NewGuid():N}");
+        try
+        {
+            var paths = new TestPaths(root);
+            paths.EnsureDirectoriesExist();
+            await File.WriteAllTextAsync(
+                paths.SettingsFilePath,
+                """
+                {
+                  "SpeechModel": "legacy-model",
+                  "Language": "ja-JP",
+                  "ComputeBackend": 2
+                }
+                """);
+            using var service = new JsonSettingsService(
+                paths,
+                NullLogger<JsonSettingsService>.Instance);
+
+            await service.LoadAsync();
+
+            Assert.Equal("legacy-model", service.Current.DefaultModelId);
+            Assert.Equal("ja-JP", service.Current.DefaultLanguage);
+            Assert.Equal(ComputeBackend.Cuda, service.Current.DefaultBackend);
         }
         finally
         {

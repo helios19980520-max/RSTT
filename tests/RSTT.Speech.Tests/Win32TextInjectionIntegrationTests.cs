@@ -1,14 +1,28 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Windows.Automation;
 using Microsoft.Extensions.Logging.Abstractions;
+using RSTT.Core.Abstractions;
+using RSTT.Core.Models;
 using RSTT.Input;
 using Xunit;
 
 namespace RSTT.Speech.Tests;
 
+[Collection(NativeInputTestGroup.Name)]
 public sealed class Win32TextInjectionIntegrationTests
 {
+    private static readonly string[] ExactCorpus =
+    [
+        "The quick brown fox jumps over the lazy dog.",
+        "Punctuation: commas, periods... semicolons; colons: quotes \"exact\"!",
+        "日本語の文字起こしを正確に入力します。",
+        "한국어 음성을 정확하게 입력합니다.",
+        "café déjà vu — naïve façade",
+        "Emoji and surrogate pairs: 🙂🚀👩‍💻",
+        new string('L', 2_048),
+    ];
+
     [Fact]
     public void NativeInputLayoutMatchesWindowsX64Abi()
     {
@@ -18,293 +32,451 @@ public sealed class Win32TextInjectionIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsIntegration")]
-    public async Task UnicodeSendInputTypesIntoNotepad()
+    public async Task DedicatedNativeEditControlReceivesExactCorpus()
     {
-        var existingHandles = GetVisibleNotepadHandles();
-        if (existingHandles.Count > 0)
+        foreach (var expected in ExactCorpus)
         {
-            // Never focus, type into, or close a user-owned Notepad window.
-            // The native ABI test above remains deterministic in this environment.
-            return;
-        }
+            await using var host = await NativeEditControlHost.StartAsync();
+            using var service = new Win32TextInjectionService(
+                NullLogger<Win32TextInjectionService>.Instance);
 
-        var testDocument = Path.Combine(Path.GetTempPath(), $"rstt-sendinput-{Guid.NewGuid():N}.txt");
-        await File.WriteAllTextAsync(testDocument, string.Empty);
-        var startInfo = new ProcessStartInfo("notepad.exe")
-        {
-            UseShellExecute = true,
-        };
-        startInfo.ArgumentList.Add(testDocument);
-        using var launcher = Process.Start(startInfo);
-        Assert.NotNull(launcher);
-        var handle = IntPtr.Zero;
-        try
-        {
-            // Windows 11 Notepad is a packaged, multi-process app. Process.Start
-            // returns a short-lived launcher rather than the process that owns the
-            // editor window, so discover the new top-level window explicitly.
-            handle = await WaitForNewNotepadWindowAsync(
-                existingHandles,
-                Path.GetFileName(testDocument),
-                TimeSpan.FromSeconds(10));
-            Assert.NotEqual(IntPtr.Zero, handle);
-            var focused = await FocusNotepadEditorAsync(handle, TimeSpan.FromSeconds(3));
-            if (!focused)
-            {
-                // An elevated/always-on-top foreground app can prevent a normal
-                // test host from activating Notepad. Do not send input to the
-                // wrong user window; ABI coverage still runs independently.
-                return;
-            }
+            var result = await service.InjectAsync(Request(expected, 1));
 
-            using var service = new Win32TextInjectionService(NullLogger<Win32TextInjectionService>.Instance);
-            const string expected = "RSTT SendInput smoke \u2713";
-            foreach (var segment in new[] { "RSTT", " SendInput", " smoke", " \u2713" })
-            {
-                var result = await service.InjectTextAsync(segment);
-                Assert.True(result.Succeeded, result.Message);
-            }
-
-            var actual = await WaitForDocumentTextAsync(handle, expected, TimeSpan.FromSeconds(5));
-            Assert.Contains(expected, actual, StringComparison.Ordinal);
-        }
-        finally
-        {
-            if (handle != IntPtr.Zero)
-            {
-                await CloseNotepadWithoutSavingAsync(handle);
-            }
-
-            File.Delete(testDocument);
+            Assert.Equal(TextInjectionStatus.Success, result.Status);
+            Assert.Equal(
+                expected,
+                await host.WaitForExactTextAsync(expected, TimeSpan.FromSeconds(5)));
         }
     }
 
-    private static HashSet<nint> GetVisibleNotepadHandles()
+    [Fact]
+    [Trait("Category", "WindowsIntegration")]
+    public async Task OneHundredConsecutiveCommitsAreExactWithNoSkipPath()
     {
-        var handles = new HashSet<nint>();
-        foreach (var process in Process.GetProcessesByName("Notepad"))
+        await using var host = await NativeEditControlHost.StartAsync();
+        using var service = new Win32TextInjectionService(
+            NullLogger<Win32TextInjectionService>.Instance);
+        const string sentence = "Exact repeated sentence 0123456789. ";
+        var expected = string.Concat(Enumerable.Repeat(sentence, 100));
+
+        for (var index = 1; index <= 100; index++)
         {
-            using (process)
+            var result = await service.InjectAsync(Request(sentence, index));
+            Assert.Equal(TextInjectionStatus.Success, result.Status);
+        }
+
+        Assert.Equal(
+            expected,
+            await host.WaitForExactTextAsync(expected, TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsIntegration")]
+    public async Task ConsecutiveCommitBoundariesDoNotAlterText()
+    {
+        await using var host = await NativeEditControlHost.StartAsync();
+        using var service = new Win32TextInjectionService(
+            NullLogger<Win32TextInjectionService>.Instance);
+        var segments = new[] { "RSTT", " exact", " consecutive", " commits", " 🙂" };
+        var expected = string.Concat(segments);
+
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var result = await service.InjectAsync(Request(segments[index], index + 1));
+            Assert.Equal(TextInjectionStatus.Success, result.Status);
+        }
+
+        Assert.Equal(
+            expected,
+            await host.WaitForExactTextAsync(expected, TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsIntegration")]
+    public async Task NativeMessageTraceContainsOneMarkedDownUpPairPerUtf16Unit()
+    {
+        const string expected = "Marked Unicode 🙂";
+        await using var host = await NativeEditControlHost.StartAsync(recordEvents: true);
+        using var service = new Win32TextInjectionService(
+            NullLogger<Win32TextInjectionService>.Instance);
+
+        var result = await service.InjectAsync(Request(expected, 1));
+
+        Assert.Equal(TextInjectionStatus.Success, result.Status);
+        Assert.Equal(
+            expected,
+            await host.WaitForExactTextAsync(expected, TimeSpan.FromSeconds(5)));
+        var events = await host.WaitForMarkedEventsAsync(
+            expected.Length * 2,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(expected.Length, events.Count(item => item.Message == 0x0100));
+        Assert.Equal(expected.Length, events.Count(item => item.Message == 0x0101));
+        Assert.All(events, item => Assert.Equal(1, item.RepeatCount));
+    }
+
+    private static InjectionRequest Request(string text, long commitId) =>
+        new(
+            new SessionGenerationId(1),
+            commitId,
+            commitId,
+            text,
+            DateTimeOffset.UtcNow);
+
+    private sealed class NativeEditControlHost : IAsyncDisposable
+    {
+        private readonly string _directory;
+        private readonly string _outputPath;
+        private readonly string _eventsPath;
+        private readonly Process _process;
+
+        private NativeEditControlHost(
+            string directory,
+            string outputPath,
+            string eventsPath,
+            Process process)
+        {
+            _directory = directory;
+            _outputPath = outputPath;
+            _eventsPath = eventsPath;
+            _process = process;
+        }
+
+        public static async Task<NativeEditControlHost> StartAsync(bool recordEvents = false)
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                $"rstt-edit-host-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(directory);
+            var readyPath = Path.Combine(directory, "ready.txt");
+            var outputPath = Path.Combine(directory, "output.txt");
+            var eventsPath = Path.Combine(directory, "events.txt");
+            var executable = LocateTestHostExecutable();
+            var startInfo = new ProcessStartInfo(executable)
             {
-                process.Refresh();
-                if (process.MainWindowHandle != IntPtr.Zero)
-                {
-                    handles.Add(process.MainWindowHandle);
-                }
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add(readyPath);
+            startInfo.ArgumentList.Add(outputPath);
+            if (recordEvents)
+            {
+                startInfo.ArgumentList.Add(eventsPath);
+            }
+            var process = Process.Start(startInfo) ??
+                throw new InvalidOperationException("The native edit-control host did not start.");
+            var host = new NativeEditControlHost(
+                directory,
+                outputPath,
+                eventsPath,
+                process);
+            try
+            {
+                var handles = await WaitForReadyAsync(
+                    readyPath,
+                    process,
+                    TimeSpan.FromSeconds(5));
+                Assert.True(
+                    await FocusAsync(
+                        handles.Window,
+                        handles.Editor,
+                        process.Id,
+                        TimeSpan.FromSeconds(5)),
+                    "The dedicated native edit-control host could not become the foreground window.");
+                return host;
+            }
+            catch
+            {
+                await host.DisposeAsync();
+                throw;
             }
         }
 
-        return handles;
-    }
-
-    private static async Task<nint> WaitForNewNotepadWindowAsync(
-        HashSet<nint> existingHandles,
-        string expectedTitle,
-        TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        public async Task<IReadOnlyList<RecordedInputEvent>> WaitForMarkedEventsAsync(
+            int expectedCount,
+            TimeSpan timeout)
         {
-            foreach (var process in Process.GetProcessesByName("Notepad"))
+            var deadline = DateTime.UtcNow + timeout;
+            var events = Array.Empty<RecordedInputEvent>();
+            while (DateTime.UtcNow < deadline)
             {
-                using (process)
+                if (File.Exists(_eventsPath))
                 {
-                    process.Refresh();
-                    if (process.MainWindowHandle != IntPtr.Zero &&
-                        !existingHandles.Contains(process.MainWindowHandle) &&
-                        process.MainWindowTitle.Contains(expectedTitle, StringComparison.OrdinalIgnoreCase))
+                    try
                     {
-                        return process.MainWindowHandle;
+                        events = (await File.ReadAllLinesAsync(_eventsPath))
+                            .Select(ParseEvent)
+                            .Where(item =>
+                                item.ExtraInfo == Win32TextInjectionService.InputMarker &&
+                                item.Message is 0x0100 or 0x0101)
+                            .ToArray();
+                        if (events.Length >= expectedCount)
+                        {
+                            return events;
+                        }
+                    }
+                    catch (IOException)
+                    {
                     }
                 }
+
+                await Task.Delay(20);
             }
 
-            await Task.Delay(100);
+            return events;
         }
 
-        return IntPtr.Zero;
-    }
-
-    private static async Task<bool> FocusNotepadEditorAsync(nint windowHandle, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        public async Task<string> WaitForExactTextAsync(string expected, TimeSpan timeout)
         {
-            var currentThread = GetCurrentThreadId();
-            var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
-            var targetThread = GetWindowThreadProcessId(windowHandle, out _);
-            var attachedForeground = foregroundThread != 0 &&
-                foregroundThread != currentThread &&
-                AttachThreadInput(currentThread, foregroundThread, true);
-            var attachedTarget = targetThread != 0 &&
-                targetThread != currentThread &&
-                AttachThreadInput(currentThread, targetThread, true);
-            try
+            var deadline = DateTime.UtcNow + timeout;
+            var actual = string.Empty;
+            while (DateTime.UtcNow < deadline)
             {
-                KeybdEvent(VkMenu, 0, 0, UIntPtr.Zero);
-                KeybdEvent(VkMenu, 0, KeyEventKeyUp, UIntPtr.Zero);
-                _ = ShowWindow(windowHandle, SwRestore);
-                _ = BringWindowToTop(windowHandle);
-                _ = SetForegroundWindow(windowHandle);
-                SwitchToThisWindow(windowHandle, true);
-                if (GetWindowRect(windowHandle, out var bounds))
+                if (File.Exists(_outputPath))
                 {
-                    _ = SetCursorPos(bounds.Left + ((bounds.Right - bounds.Left) / 2), bounds.Top + 16);
-                    MouseEvent(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-                    MouseEvent(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
-                }
-            }
-            finally
-            {
-                if (attachedTarget)
-                {
-                    _ = AttachThreadInput(currentThread, targetThread, false);
-                }
-                if (attachedForeground)
-                {
-                    _ = AttachThreadInput(currentThread, foregroundThread, false);
-                }
-            }
-
-            _ = GetWindowThreadProcessId(GetForegroundWindow(), out var foregroundProcessId);
-            _ = GetWindowThreadProcessId(windowHandle, out var targetProcessId);
-            if (foregroundProcessId != 0 && foregroundProcessId == targetProcessId)
-            {
-                await Task.Delay(200);
-                return true;
-            }
-
-            await Task.Delay(100);
-        }
-
-        return false;
-    }
-
-    private static async Task<string> WaitForDocumentTextAsync(
-        nint windowHandle,
-        string expected,
-        TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        var text = string.Empty;
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var window = AutomationElement.FromHandle(windowHandle);
-                var document = window.FindFirst(
-                    TreeScope.Descendants,
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
-                if (document is not null &&
-                    document.TryGetCurrentPattern(TextPattern.Pattern, out var pattern))
-                {
-                    text = ((TextPattern)pattern).DocumentRange.GetText(-1);
-                    if (text.Contains(expected, StringComparison.Ordinal))
+                    try
                     {
-                        return text;
+                        actual = await File.ReadAllTextAsync(_outputPath);
+                        if (string.Equals(actual, expected, StringComparison.Ordinal))
+                        {
+                            return actual;
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // The host rewrites the snapshot on its UI thread.
                     }
                 }
-            }
-            catch (COMException)
-            {
-                // Retry while packaged Notepad completes its XAML initialization.
+
+                await Task.Delay(20);
             }
 
-            await Task.Delay(100);
+            return actual;
         }
 
-        return text;
-    }
-
-    private static async Task CloseNotepadWithoutSavingAsync(nint windowHandle)
-    {
-        _ = PostMessage(windowHandle, WmClose, IntPtr.Zero, IntPtr.Zero);
-
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTime.UtcNow < deadline)
+        public ValueTask DisposeAsync()
         {
-            if (!GetVisibleNotepadHandles().Contains(windowHandle))
+            if (!_process.HasExited)
             {
-                return;
+                _process.Kill(entireProcessTree: true);
+                _process.WaitForExit(2_000);
             }
 
+            _process.Dispose();
             try
             {
-                var discardButton = AutomationElement.RootElement.FindFirst(
-                    TreeScope.Descendants,
-                    new OrCondition(
-                        new PropertyCondition(AutomationElement.NameProperty, "Don't save"),
-                        new PropertyCondition(AutomationElement.NameProperty, "Don’t save"),
-                        new PropertyCondition(AutomationElement.NameProperty, "Don't Save")));
-                if (discardButton is not null &&
-                    discardButton.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern))
-                {
-                    ((InvokePattern)pattern).Invoke();
-                    return;
-                }
+                Directory.Delete(_directory, recursive: true);
             }
-            catch (COMException)
+            catch (IOException)
             {
-                // Packaged Notepad can transiently return RPC_E_SERVERFAULT while
-                // replacing the editor window with its save-confirmation dialog.
             }
 
-            await Task.Delay(100);
+            return ValueTask.CompletedTask;
         }
-    }
 
-    private const uint WmClose = 0x0010;
-    private const byte VkMenu = 0x12;
-    private const uint KeyEventKeyUp = 0x0002;
-    private const uint MouseEventLeftDown = 0x0002;
-    private const uint MouseEventLeftUp = 0x0004;
-    private const int SwRestore = 9;
+        private static string LocateTestHostExecutable()
+        {
+            var configuration =
+#if DEBUG
+                "Debug";
+#else
+                "Release";
+#endif
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory is not null &&
+                   !File.Exists(Path.Combine(directory.FullName, "RSTT.sln")))
+            {
+                directory = directory.Parent;
+            }
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(nint windowHandle);
+            if (directory is null)
+            {
+                throw new InvalidOperationException("The RSTT solution root could not be located.");
+            }
 
-    [DllImport("user32.dll")]
-    private static extern nint GetForegroundWindow();
+            var executable = Path.Combine(
+                directory.FullName,
+                "tests",
+                "RSTT.Input.TestHost",
+                "bin",
+                configuration,
+                "net8.0-windows",
+                "RSTT.Input.TestHost.exe");
+            return File.Exists(executable)
+                ? executable
+                : throw new FileNotFoundException(
+                    "Build the dedicated input test host before running integration tests.",
+                    executable);
+        }
 
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(nint windowHandle, out uint processId);
+        private static RecordedInputEvent ParseEvent(string line)
+        {
+            var fields = line.Split(';');
+            if (fields.Length != 5)
+            {
+                throw new FormatException("The native input event record is malformed.");
+            }
 
-    [DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
+            return new RecordedInputEvent(
+                int.Parse(fields[1], CultureInfo.InvariantCulture),
+                int.Parse(fields[3], CultureInfo.InvariantCulture),
+                (nint)long.Parse(fields[4], CultureInfo.InvariantCulture));
+        }
 
-    [DllImport("user32.dll")]
-    private static extern bool AttachThreadInput(uint attachThreadId, uint attachToThreadId, bool attach);
+        private static async Task<(nint Window, nint Editor)> WaitForReadyAsync(
+            string readyPath,
+            Process process,
+            TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline && !process.HasExited)
+            {
+                if (File.Exists(readyPath))
+                {
+                    try
+                    {
+                        var text = await File.ReadAllTextAsync(readyPath);
+                        var values = text.Split(';');
+                        if (values.Length == 2 &&
+                            long.TryParse(
+                                values[0],
+                                NumberStyles.Integer,
+                                CultureInfo.InvariantCulture,
+                                out var window) &&
+                            long.TryParse(
+                                values[1],
+                                NumberStyles.Integer,
+                                CultureInfo.InvariantCulture,
+                                out var editor))
+                        {
+                            return ((nint)window, (nint)editor);
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // The host may still have the ready file open for writing.
+                    }
+                }
 
-    [DllImport("user32.dll")]
-    private static extern bool BringWindowToTop(nint windowHandle);
+                await Task.Delay(20);
+            }
 
-    [DllImport("user32.dll")]
-    private static extern void SwitchToThisWindow(nint windowHandle, bool altTab);
+            throw new TimeoutException("The dedicated native edit-control host did not become ready.");
+        }
 
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(nint windowHandle, out RECT bounds);
+        private static async Task<bool> FocusAsync(
+            nint windowHandle,
+            nint editorHandle,
+            int expectedProcessId,
+            TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                var currentThread = GetCurrentThreadId();
+                var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+                var targetThread = GetWindowThreadProcessId(windowHandle, out _);
+                var attachedForeground = foregroundThread != 0 &&
+                    foregroundThread != currentThread &&
+                    AttachThreadInput(currentThread, foregroundThread, true);
+                var attachedTarget = targetThread != 0 &&
+                    targetThread != currentThread &&
+                    AttachThreadInput(currentThread, targetThread, true);
+                try
+                {
+                    _ = ShowWindow(windowHandle, 9);
+                    _ = BringWindowToTop(windowHandle);
+                    _ = SetForegroundWindow(windowHandle);
+                    _ = SetFocus(editorHandle);
+                }
+                finally
+                {
+                    if (attachedTarget)
+                    {
+                        _ = AttachThreadInput(currentThread, targetThread, false);
+                    }
 
-    [DllImport("user32.dll")]
-    private static extern bool SetCursorPos(int x, int y);
+                    if (attachedForeground)
+                    {
+                        _ = AttachThreadInput(currentThread, foregroundThread, false);
+                    }
+                }
 
-    [DllImport("user32.dll", EntryPoint = "mouse_event")]
-    private static extern void MouseEvent(uint flags, uint x, uint y, uint data, UIntPtr extraInfo);
+                _ = GetWindowThreadProcessId(GetForegroundWindow(), out var processId);
+                var guiInfo = new GuiThreadInfo
+                {
+                    Size = Marshal.SizeOf<GuiThreadInfo>(),
+                };
+                var editorFocused = GetGUIThreadInfo(targetThread, ref guiInfo) &&
+                    guiInfo.FocusWindow == editorHandle;
+                if (processId == (uint)expectedProcessId && editorFocused)
+                {
+                    // Let the activation/ALT handshake and the WinForms focus
+                    // transition drain before the first measured Unicode record.
+                    await Task.Delay(350);
+                    return true;
+                }
 
-    [DllImport("user32.dll", EntryPoint = "keybd_event")]
-    private static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+                await Task.Delay(50);
+            }
 
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(nint windowHandle, int command);
+            return false;
+        }
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(nint windowHandle, uint message, nint wParam, nint lParam);
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(nint windowHandle);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
+        [DllImport("user32.dll")]
+        private static extern nint GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(nint windowHandle, out uint processId);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(nint windowHandle, int command);
+
+        [DllImport("user32.dll")]
+        private static extern nint SetFocus(nint windowHandle);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(
+            uint attachThreadId,
+            uint attachToThreadId,
+            bool attach);
+
+        [DllImport("user32.dll")]
+        private static extern bool BringWindowToTop(nint windowHandle);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GuiThreadInfo
+        {
+            public int Size;
+            public uint Flags;
+            public nint ActiveWindow;
+            public nint FocusWindow;
+            public nint CaptureWindow;
+            public nint MenuOwnerWindow;
+            public nint MoveSizeWindow;
+            public nint CaretWindow;
+            public RECT CaretRectangle;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        public sealed record RecordedInputEvent(
+            int Message,
+            int RepeatCount,
+            nint ExtraInfo);
     }
 }

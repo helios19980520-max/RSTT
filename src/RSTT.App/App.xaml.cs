@@ -16,14 +16,24 @@ namespace RSTT.App;
 public partial class App : System.Windows.Application
 {
     private ServiceProvider? _serviceProvider;
+    private SingleInstanceCoordinator? _singleInstance;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        _singleInstance = SingleInstanceCoordinator.Acquire();
+        if (!_singleInstance.IsPrimary)
+        {
+            Shutdown();
+            return;
+        }
+
         _serviceProvider = ConfigureServices();
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         MainWindow = mainWindow;
         mainWindow.Show();
+        _singleInstance.Listen(() =>
+            Dispatcher.BeginInvoke(() => ActivateMainWindow(mainWindow)));
         _ = InitializeAsync(_serviceProvider.GetRequiredService<MainViewModel>(), mainWindow);
     }
 
@@ -37,6 +47,7 @@ public partial class App : System.Windows.Application
             await _serviceProvider.DisposeAsync().ConfigureAwait(true);
         }
 
+        _singleInstance?.Dispose();
         base.OnExit(e);
     }
 
@@ -54,16 +65,18 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IApplicationStateService, ApplicationStateService>();
         services.AddSingleton<IModelCatalog, JsonModelCatalog>();
         services.AddSingleton<IPerformanceMonitor, PerformanceMonitor>();
+        services.AddSingleton<IHardwareDetectionService, WindowsHardwareDetectionService>();
         services.AddSingleton<IComputeDeviceService, WindowsComputeDeviceService>();
+        services.AddSingleton<IComputeBackendService>(
+            provider => provider.GetRequiredService<IComputeDeviceService>());
         services.AddSingleton<TextFormattingPolicy>();
-        // Captions stay low-latency through CurrentCaptionText. Irreversible
-        // SendInput uses endpoint-final text by default to avoid partial revisions.
-        services.AddSingleton<ITranscriptCommitPolicy, FinalOnlyCommitPolicy>();
+        services.AddSingleton<ITranscriptCommitPolicy, ModelAwareTranscriptCommitPolicy>();
         services.AddSingleton<TranscriptStabilizer>();
         services.AddSingleton<CaptionHistory>();
         services.AddSingleton<IAudioCaptureService, WasapiLoopbackAudioCaptureService>();
         services.AddSingleton<IModelManager, LocalModelManager>();
-        services.AddSingleton<ISpeechRecognitionEngine, SherpaOnnxSpeechRecognitionEngine>();
+        services.AddSingleton<ISpeechEngineFactory, SpeechEngineFactory>();
+        services.AddSingleton<ISpeechRecognitionEngine, SpeechEngineRouter>();
         services.AddSingleton<ITextInjectionService, Win32TextInjectionService>();
         services.AddSingleton<RecognitionCoordinator>();
         services.AddSingleton<MainViewModel>();
@@ -85,5 +98,23 @@ public partial class App : System.Windows.Application
         {
             System.Windows.MessageBox.Show($"RSTT could not initialize.\n\n{exception.Message}\n\nSee the local log folder for details.", "RSTT", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private static void ActivateMainWindow(MainWindow mainWindow)
+    {
+        if (!mainWindow.IsVisible)
+        {
+            mainWindow.Show();
+        }
+
+        if (mainWindow.WindowState == WindowState.Minimized)
+        {
+            mainWindow.WindowState = WindowState.Normal;
+        }
+
+        mainWindow.Activate();
+        mainWindow.Topmost = true;
+        mainWindow.Topmost = false;
+        mainWindow.Focus();
     }
 }
