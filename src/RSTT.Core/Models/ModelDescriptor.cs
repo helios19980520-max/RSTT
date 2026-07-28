@@ -3,6 +3,7 @@ namespace RSTT.Core.Models;
 public enum ModelIntegrationStatus
 {
     Available,
+    Preview,
     Experimental,
     ComingLater,
 }

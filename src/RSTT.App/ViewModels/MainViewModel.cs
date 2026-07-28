@@ -29,6 +29,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly CaptionHistory _captionHistory;
     private readonly IPerformanceMonitor _performance;
     private readonly IComputeDeviceService _computeDevices;
+    private readonly ISpeechEngineFactory _speechEngineFactory;
     private readonly ILogger<MainViewModel> _logger;
     private readonly DispatcherTimer _telemetryTimer;
     private CancellationTokenSource? _modelDownloadCancellation;
@@ -55,6 +56,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private ApplicationState _currentState = ApplicationState.Initializing;
     private ComputeBackend _computeBackend = ComputeBackend.Auto;
     private RecognitionMode _recognitionMode = RecognitionMode.Balanced;
+    private TextInjectionDeliveryMode _textInjectionDeliveryMode =
+        TextInjectionDeliveryMode.Automatic;
     private int _selectedPageIndex;
     private bool _isTextInjectionEnabled = true;
     private bool _isCaptionOverlayEnabled = true;
@@ -94,6 +97,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CaptionHistory captionHistory,
         IPerformanceMonitor performance,
         IComputeDeviceService computeDevices,
+        ISpeechEngineFactory speechEngineFactory,
         ILogger<MainViewModel> logger)
     {
         _coordinator = coordinator;
@@ -105,6 +109,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _captionHistory = captionHistory;
         _performance = performance;
         _computeDevices = computeDevices;
+        _speechEngineFactory = speechEngineFactory;
         _logger = logger;
         _telemetryTimer = new DispatcherTimer(
             TimeSpan.FromSeconds(1),
@@ -143,6 +148,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CopyDiagnosticsCommand = new RelayCommand(
             CopyDiagnostics,
             () => !string.IsNullOrWhiteSpace(DiagnosticsText));
+        OpenDiagnosticLinkCommand = new ParameterRelayCommand(
+            OpenDiagnosticLink,
+            parameter => parameter is string value &&
+                Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+                uri.Scheme == Uri.UriSchemeHttps);
         NavigateToModelsCommand = new RelayCommand(() => SelectedPageIndex = 2);
         PreviewOverlayCommand = new RelayCommand(ToggleOverlayPreview);
 
@@ -161,6 +171,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ICollectionView ModelsView { get; }
 
     public ObservableCollection<CaptionSegment> CaptionSegments { get; } = [];
+
+    public ObservableCollection<ComputeDiagnosticItem> ComputeDiagnostics { get; } = [];
 
     public AsyncRelayCommand StartStopCommand { get; }
 
@@ -193,6 +205,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand RunDiagnosticsCommand { get; }
 
     public RelayCommand CopyDiagnosticsCommand { get; }
+
+    public ParameterRelayCommand OpenDiagnosticLinkCommand { get; }
 
     public RelayCommand NavigateToModelsCommand { get; }
 
@@ -277,7 +291,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string ActiveRuntimeLabel =>
         _performanceSnapshot?.Provider switch
         {
-            "cuda" => "CUDA Active",
+            "cuda" or "cuda-active" => "CUDA Active",
             "cuda-ready" => "CUDA ready · awaiting decode",
             "cpu" => "CPU Active",
             { Length: > 0 } provider => provider,
@@ -285,7 +299,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         };
 
     public string ActiveLanguageLabel =>
-        ActiveModel?.Descriptor is { Languages.Count: > 0 } descriptor
+        ActiveModel?.Descriptor is { Languages.Count: 1 } descriptor
             ? descriptor.Languages[0]
             : _settings.Current.DefaultLanguage;
 
@@ -329,6 +343,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _isCaptionOverlayEnabled, value))
             {
                 _settings.Current.CaptionOverlayEnabled = value;
+                PersistSettings();
+            }
+        }
+    }
+
+    public TextInjectionDeliveryMode TextInjectionDeliveryMode
+    {
+        get => _textInjectionDeliveryMode;
+        set
+        {
+            if (SetProperty(ref _textInjectionDeliveryMode, value))
+            {
+                _settings.Current.TextInjectionDeliveryMode = value;
+                ActionMessage = value switch
+                {
+                    TextInjectionDeliveryMode.Automatic =>
+                        "Automatic uses the compatibility profile for modern Notepad.",
+                    TextInjectionDeliveryMode.Compatibility =>
+                        "Compatibility uses measured single-unit paired Unicode pacing for modern Notepad.",
+                    _ => "Direct uses unpaced Unicode blocks.",
+                };
                 PersistSettings();
             }
         }
@@ -665,11 +700,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string DefaultLanguage
+    {
+        get => _settings.Current.DefaultLanguage;
+        set
+        {
+            var normalized = string.IsNullOrWhiteSpace(value)
+                ? "auto"
+                : value.Trim().ToLowerInvariant();
+            if (string.Equals(
+                    _settings.Current.DefaultLanguage,
+                    normalized,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _settings.Current.DefaultLanguage = normalized;
+            _settings.Current.Language = normalized;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ActiveLanguageLabel));
+            ActionMessage = "Language changes take effect when the model is reloaded.";
+            PersistSettings();
+        }
+    }
+
     public IReadOnlyList<ComputeBackend> ComputeBackends { get; } =
         Enum.GetValues<ComputeBackend>();
 
     public IReadOnlyList<RecognitionMode> RecognitionModes { get; } =
         Enum.GetValues<RecognitionMode>();
+
+    public IReadOnlyList<TextInjectionDeliveryMode> TextInjectionDeliveryModes { get; } =
+        Enum.GetValues<TextInjectionDeliveryMode>();
+
+    public IReadOnlyList<string> RecognitionLanguages { get; } =
+    [
+        "auto", "en", "zh", "yue", "ja", "ko", "de", "es", "fr", "it",
+        "pt", "ru", "ar", "hi", "th", "vi", "tr", "pl", "nl", "uk",
+    ];
 
     public string ComputeStatus
     {
@@ -805,7 +874,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public bool IsModelReady => SelectedModel?.IsInstalled == true && SelectedModel.Availability == ModelAvailability.Ready;
 
     public bool CanDownloadSelectedModel =>
-        SelectedModel?.Descriptor?.IntegrationStatus == ModelIntegrationStatus.Available &&
+        SelectedModel?.Descriptor?.IntegrationStatus is
+            ModelIntegrationStatus.Available or ModelIntegrationStatus.Preview &&
         !IsModelReady &&
         !IsDownloadingModel;
 
@@ -838,6 +908,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 : IsModelReady
                     ? "Installed"
                     : "Available",
+            ModelIntegrationStatus.Preview => SelectedModel.IsActive
+                ? "Active preview"
+                : IsModelReady
+                    ? "Installed preview"
+                    : "Preview · validation evidence incomplete",
             ModelIntegrationStatus.Experimental => "Experimental",
             ModelIntegrationStatus.ComingLater => "Coming later",
             _ => "Unknown",
@@ -1085,7 +1160,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var devices = await _audioCapture.GetOutputDevicesAsync().ConfigureAwait(true);
             var performance = _performance.GetSnapshot();
             var modelValid = _modelManager.TryValidateModel(out var validatedModel);
+            var selfTest = await RunSpeechSelfTestAsync(
+                    model?.Descriptor,
+                    modelValid)
+                .ConfigureAwait(true);
             var builder = new StringBuilder();
+            ComputeDiagnostics.Clear();
+            foreach (var layer in compute.Layers)
+            {
+                ComputeDiagnostics.Add(ComputeDiagnosticItem.FromLayer(layer));
+            }
             void AppendInvariant(FormattableString line) =>
                 builder.AppendLine(line.ToString(CultureInfo.InvariantCulture));
             builder.AppendLine("RSTT Diagnostics");
@@ -1116,6 +1200,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             AppendInvariant($"Language: {ActiveLanguageLabel}");
             AppendInvariant($"Installation valid: {modelValid}");
             AppendInvariant($"Validation status: {validatedModel.StatusMessage ?? "None"}");
+            AppendInvariant($"Self-test: {selfTest}");
             builder.AppendLine();
             builder.AppendLine("[Audio]");
             AppendInvariant($"Selected: {SelectedAudioDeviceName}");
@@ -1128,6 +1213,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             AppendInvariant($"RTF: {performance.RealtimeFactor:N3}");
             AppendInvariant($"Decode P50/P95/max: {performance.DecodeP50Ms:N1}/{performance.DecodeP95Ms:N1}/{performance.DecodeMaxMs:N1} ms");
             AppendInvariant($"Audio queue: {performance.AudioQueueDurationMs:N1} ms");
+            AppendInvariant($"Injection rate: {performance.InjectionHz:N2}/s");
+            AppendInvariant($"Average injection length: {performance.AverageInjectionUtf16Length:N1} UTF-16 units");
+            AppendInvariant($"SendInput calls: {performance.SendInputCallsPerSecond:N2}/s");
+            AppendInvariant($"Injection queue high-watermark: {performance.InjectionQueueHighWatermark}");
+            AppendInvariant($"Injection failures: {performance.InjectionFailures}");
             AppendInvariant($"Working set: {performance.WorkingSetBytes / 1024d / 1024d:N1} MiB");
             builder.AppendLine();
             builder.AppendLine("Transcript content: excluded");
@@ -1140,10 +1230,80 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task<string> RunSpeechSelfTestAsync(
+        ModelDescriptor? descriptor,
+        bool modelValid)
+    {
+        if (IsListening)
+        {
+            return "Not tested while a live session is active.";
+        }
+
+        if (!modelValid || descriptor is null)
+        {
+            return "Not tested because the selected model installation is not valid.";
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var generation = new SessionGenerationId(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var finalResults = 0;
+        try
+        {
+            await using var engine = _speechEngineFactory.Create(descriptor);
+            engine.RecognitionResultAvailable += OnSelfTestResult;
+            await engine.InitializeAsync(timeout.Token).ConfigureAwait(true);
+            await engine.StartAsync(timeout.Token).ConfigureAwait(true);
+            await engine.ProcessAudioAsync(
+                    new AudioChunk(
+                        1,
+                        DateTimeOffset.UtcNow,
+                        new float[AudioChunk.SampleRate],
+                        generation),
+                    timeout.Token)
+                .ConfigureAwait(true);
+            await engine.StopAsync(timeout.Token).ConfigureAwait(true);
+            engine.RecognitionResultAvailable -= OnSelfTestResult;
+            return descriptor.Engine == "whisper-cpp"
+                ? $"Ready. Isolated worker handshake, model load, warmup, and decode completed; {finalResults} final result(s) from silent test audio."
+                : $"Ready. Recognizer load and stop/finalization lifecycle completed; {finalResults} final result(s) from silent test audio.";
+        }
+        catch (OperationCanceledException)
+        {
+            return "Failed: the isolated self-test exceeded 45 seconds.";
+        }
+        catch (Exception exception)
+        {
+            return $"Failed: {exception.Message}";
+        }
+
+        void OnSelfTestResult(object? sender, RecognitionHypothesis hypothesis)
+        {
+            if (hypothesis.IsFinal)
+            {
+                finalResults++;
+            }
+        }
+    }
+
     private void CopyDiagnostics()
     {
         System.Windows.Clipboard.SetText(DiagnosticsText);
         ActionMessage = "Diagnostics copied without transcript content.";
+    }
+
+    private static void OpenDiagnosticLink(object? parameter)
+    {
+        if (parameter is not string value ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps)
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+        {
+            UseShellExecute = true,
+        });
     }
 
     private async Task TestAudioAsync()
@@ -1402,6 +1562,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void ApplySettings(AppSettings settings)
     {
         _isTextInjectionEnabled = settings.TextInjectionEnabled;
+        _textInjectionDeliveryMode = settings.TextInjectionDeliveryMode;
         _isCaptionOverlayEnabled = settings.CaptionOverlayEnabled;
         _minimizeToTray = settings.MinimizeToTray;
         _startMinimized = settings.StartMinimized;
@@ -1440,6 +1601,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         destination.RecognitionMode = source.RecognitionMode;
         destination.CpuThreadLimit = source.CpuThreadLimit;
         destination.TextInjectionEnabled = source.TextInjectionEnabled;
+        destination.TextInjectionDeliveryMode = source.TextInjectionDeliveryMode;
         destination.CaptionOverlayEnabled = source.CaptionOverlayEnabled;
         destination.StartMinimized = source.StartMinimized;
         destination.MinimizeToTray = source.MinimizeToTray;

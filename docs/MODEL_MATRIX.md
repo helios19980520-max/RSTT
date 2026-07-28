@@ -8,10 +8,12 @@ This matrix describes the RSTT integration, not every capability of the upstream
 | Nemotron 3.5 Streaming Multilingual 0.6B INT8 | sherpa-onnx online transducer with stream language option | 19 transcription-ready locales plus documented broader coverage | Native, cache-aware | CPU architecture/integration | 651 MiB | Balanced, 560 ms | Not locally accuracy-benchmarked | OpenMDW 1.1 | Available |
 | Parakeet Unified English 0.6B INT8 | sherpa-onnx online transducer | English | Buffered | CPU | 632 MiB | Accurate, 1120 ms | Strong punctuation/capitalization; materially more CPU here | NVIDIA Open Model License | Available |
 | Parakeet TDT 0.6B v3 INT8 | sherpa offline/VAD route | 25 European languages | Segmented realtime | None | — | VAD 200/500 ms initial policy | Engine route exists; no pinned RSTT artifact/corpus validation | NVIDIA Open Model License | Experimental, non-actionable |
-| Qwen3-ASR 0.6B INT8, 2026-03-25 | sherpa offline/VAD route | 30 languages plus 22 Chinese dialects | Segmented realtime | None | — | VAD 200/500 ms initial policy | Engine route exists; no pinned RSTT artifact/corpus validation | Apache-2.0 | Experimental, non-actionable |
+| Qwen3-ASR 0.6B INT8, 2026-03-25 | sherpa offline/VAD route | 30 languages plus 22 Chinese dialects | Segmented realtime | CPU path implemented, decode not measured | 942 MiB | VAD 200/500 ms, 20 s maximum | Exact revision, file sizes and SHA-256 pinned; feature dimension corrected to 128; real-audio/RTF evidence pending | Apache-2.0 | Preview, actionable |
 | Moonshine Tiny English INT8 | sherpa offline/VAD route | English | Segmented realtime | None | — | VAD 200/500 ms initial policy | Engine route exists; no pinned RSTT artifact/corpus validation | MIT | Experimental, non-actionable |
 | Moonshine Base English INT8 | sherpa offline/VAD route | English | Segmented realtime | None | — | VAD 200/500 ms initial policy | Engine route exists; no pinned RSTT artifact/corpus validation | MIT | Experimental, non-actionable |
-| Whisper Small | Planned whisper.cpp engine | Multilingual | Segmented/VAD plan | None | — | — | Not benchmarked in RSTT | Upstream artifact terms | Coming later, non-actionable |
+| Whisper Large v3 Turbo Q5_0 | isolated whisper.cpp worker | Multilingual, auto/manual language | Segmented realtime | CPU worker handshake verified; decode not measured | 548 MiB | VAD 200/500 ms, 20 s maximum | Exact upstream revision/size/SHA-256 pinned | MIT | Preview, actionable |
+| Whisper Large v3 Turbo full | isolated whisper.cpp worker | Multilingual, auto/manual language | Segmented realtime | CPU/CUDA 12 workers compile; decode not measured | 1,550 MiB | VAD 200/500 ms, 20 s maximum | Maximum-quality profile; exact upstream revision/size/SHA-256 pinned | MIT | Preview, actionable |
+| Whisper Tiny/Base/Small/Medium | planned whisper.cpp profiles | Multilingual | Segmented realtime | None | — | — | Not benchmarked in RSTT | MIT | Coming later, non-actionable |
 
 ## Capability boundaries
 
@@ -19,8 +21,10 @@ This matrix describes the RSTT integration, not every capability of the upstream
 - No current model exposes hotword/custom-vocabulary controls.
 - Nemotron 3.5 applies the configured language through `OnlineStream.SetOption("language", ...)`; `auto` is offered only for that integration.
 - CUDA compatibility on a model card means the model/runtime family can use CUDA. It does not mean this CPU package executed CUDA.
+- Preview entries are downloadable and usable but are not called Supported
+  until real-audio, final-tail, memory, RTF and advertised CUDA gates pass.
 - Experimental and coming-later entries have no artifacts, install directory,
-  download, **Use now**, or default action. RSTT does not call them supported.
+  download, **Use now**, or default action.
 
 ## Source and revision policy
 

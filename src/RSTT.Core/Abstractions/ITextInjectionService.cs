@@ -28,7 +28,11 @@ public sealed record TextInjectionResult(
     nint TargetWindowHandle,
     uint TargetProcessId,
     int Win32Error,
-    string? DiagnosticMessage = null)
+    string? DiagnosticMessage = null,
+    int Utf16UnitsPerBlock = 0,
+    int SendInputCallCount = 0,
+    int QueueDepthAtEnqueue = 0,
+    string DeliveryProfile = "")
 {
     public bool Succeeded => Status == TextInjectionStatus.Success;
 }

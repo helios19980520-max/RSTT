@@ -833,6 +833,23 @@
                                                 <TextBlock Text="The overlay never activates or steals focus." Style="{StaticResource MutedBody}" FontSize="11" />
                                             </StackPanel>
                                         </CheckBox>
+                                        <Grid Margin="0,20,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="230" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock Text="Text delivery profile" FontWeight="SemiBold" />
+                                                <TextBlock Text="Automatic uses measured safe pacing for modern Notepad while keeping other targets fast."
+                                                           Style="{StaticResource MutedBody}"
+                                                           FontSize="11" />
+                                            </StackPanel>
+                                            <ComboBox Grid.Column="1"
+                                                      ItemsSource="{Binding TextInjectionDeliveryModes}"
+                                                      SelectedItem="{Binding TextInjectionDeliveryMode}"
+                                                      AutomationProperties.Name="Text injection delivery profile"
+                                                      VerticalAlignment="Center" />
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
 
@@ -841,6 +858,8 @@
                                         <TextBlock Text="Recognition compute" Style="{StaticResource SectionTitle}" />
                                         <Grid Margin="0,16,0,0">
                                             <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="1*" />
+                                                <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="1*" />
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="1*" />
@@ -855,6 +874,13 @@
                                                 <TextBlock Text="Profile" Style="{StaticResource Eyebrow}" />
                                                 <ComboBox ItemsSource="{Binding RecognitionModes}"
                                                           SelectedItem="{Binding RecognitionMode}"
+                                                          Margin="0,7,0,0" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="4">
+                                                <TextBlock Text="Language" Style="{StaticResource Eyebrow}" />
+                                                <ComboBox ItemsSource="{Binding RecognitionLanguages}"
+                                                          SelectedItem="{Binding DefaultLanguage}"
+                                                          AutomationProperties.Name="Recognition language"
                                                           Margin="0,7,0,0" />
                                             </StackPanel>
                                         </Grid>
@@ -952,7 +978,13 @@
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                                 <Button Style="{StaticResource SecondaryButton}"
+                                                        Command="{Binding OpenDiagnosticLinkCommand}"
+                                                        CommandParameter="https://github.com/helios19980520-max/RSTT/releases"
+                                                        AutomationProperties.Name="Install RSTT Accelerator Pack"
+                                                        Content="Install Accelerator Pack" />
+                                                <Button Style="{StaticResource SecondaryButton}"
                                                         Command="{Binding RunDiagnosticsCommand}"
+                                                        Margin="10,0,0,0"
                                                         AutomationProperties.Name="Run diagnostics self-test"
                                                         Content="Run self-test" />
                                                 <Button Style="{StaticResource SecondaryButton}"
@@ -962,6 +994,56 @@
                                                         Content="Copy diagnostics" />
                                             </StackPanel>
                                         </Grid>
+                                        <ItemsControl ItemsSource="{Binding ComputeDiagnostics}"
+                                                      Margin="0,16,0,0">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Background="#101A29"
+                                                            BorderBrush="{StaticResource Border}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="9"
+                                                            Padding="13,11"
+                                                            Margin="0,0,0,8">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="155" />
+                                                                <ColumnDefinition Width="86" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Text="{Binding Name}"
+                                                                       FontWeight="SemiBold"
+                                                                       VerticalAlignment="Center" />
+                                                            <TextBlock Grid.Column="1"
+                                                                       Text="{Binding State}"
+                                                                       Foreground="{StaticResource Cyan}"
+                                                                       FontSize="11"
+                                                                       VerticalAlignment="Center" />
+                                                            <StackPanel Grid.Column="2">
+                                                                <TextBlock Text="{Binding Status}"
+                                                                           TextWrapping="Wrap"
+                                                                           Style="{StaticResource MutedBody}"
+                                                                           FontSize="11" />
+                                                                <TextBlock Text="{Binding DetectedPath}"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           Foreground="{StaticResource MutedText}"
+                                                                           FontFamily="Cascadia Mono, Consolas"
+                                                                           FontSize="9"
+                                                                           Margin="0,3,0,0" />
+                                                            </StackPanel>
+                                                            <Button Grid.Column="3"
+                                                                    Style="{StaticResource SecondaryButton}"
+                                                                    Command="{Binding DataContext.OpenDiagnosticLinkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                    CommandParameter="{Binding RemediationUrl}"
+                                                                    Content="Help"
+                                                                    Margin="12,0,0,0"
+                                                                    Padding="11,5"
+                                                                    AutomationProperties.Name="Open official requirement information" />
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
                                         <TextBox Text="{Binding DiagnosticsText, Mode=OneWay}"
                                                  IsReadOnly="True"
                                                  AcceptsReturn="True"

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,6 +7,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Models;
+using RSTT.Core.Settings;
 
 namespace RSTT.Input;
 
@@ -15,12 +17,18 @@ namespace RSTT.Input;
 /// </summary>
 public sealed partial class Win32TextInjectionService : ITextInjectionService, IDisposable
 {
-    private const int BlockUtf16UnitCount = 64;
+    private const int DirectBlockUtf16UnitCount = 64;
+    private const int CompatibilityBlockUtf16UnitCount = 1;
+    private const int CompatibilityInterBlockDelayMilliseconds = 20;
     private const int QueueCapacity = 64;
     private const int MaximumPartialContinuations = 3;
     private const uint InputKeyboard = 1;
     private const uint KeyEventFUnicode = 0x0004;
     private const uint KeyEventFKeyUp = 0x0002;
+    internal static readonly nint InputMarker =
+        Environment.Is64BitProcess
+            ? unchecked((nint)0x52535454494E4A31)
+            : unchecked((nint)0x494E4A31);
 
     private readonly ILogger<Win32TextInjectionService> _logger;
     private readonly IWin32InputApi _native;
@@ -28,21 +36,41 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _worker;
     private readonly uint _currentProcessId;
+    private readonly Func<TextInjectionDeliveryMode> _getDeliveryMode;
+    private int _queuedCount;
     private bool _disposed;
 
     public Win32TextInjectionService(ILogger<Win32TextInjectionService> logger)
-        : this(logger, new Win32InputApi(), (uint)Environment.ProcessId)
+        : this(
+            logger,
+            new Win32InputApi(),
+            (uint)Environment.ProcessId,
+            static () => TextInjectionDeliveryMode.Automatic)
+    {
+    }
+
+    public Win32TextInjectionService(
+        ILogger<Win32TextInjectionService> logger,
+        ISettingsService settings)
+        : this(
+            logger,
+            new Win32InputApi(),
+            (uint)Environment.ProcessId,
+            () => settings.Current.TextInjectionDeliveryMode)
     {
     }
 
     internal Win32TextInjectionService(
         ILogger<Win32TextInjectionService> logger,
         IWin32InputApi native,
-        uint currentProcessId)
+        uint currentProcessId,
+        Func<TextInjectionDeliveryMode>? getDeliveryMode = null)
     {
         _logger = logger;
         _native = native;
         _currentProcessId = currentProcessId;
+        _getDeliveryMode = getDeliveryMode ??
+            (() => TextInjectionDeliveryMode.Automatic);
         _requests = Channel.CreateBounded<InjectionWorkItem>(new BoundedChannelOptions(QueueCapacity)
         {
             SingleReader = true,
@@ -113,15 +141,22 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
 
         var completion = new TaskCompletionSource<TextInjectionResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var profile = ResolveDeliveryProfile(
+            _getDeliveryMode(),
+            _native.TryGetProcessImagePath(processId));
+        var queueDepth = Interlocked.Increment(ref _queuedCount);
         var workItem = new InjectionWorkItem(
             request,
             target,
             processId,
+            profile,
+            queueDepth,
             completion,
             cancellationToken);
 
         if (!_requests.Writer.TryWrite(workItem))
         {
+            Interlocked.Decrement(ref _queuedCount);
             return Task.FromResult(Result(
                 TextInjectionStatus.Unavailable,
                 request,
@@ -142,7 +177,10 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             request.Text.Length,
             ComputeTextHash(request.Text),
             target,
-            processId);
+            processId,
+            profile.Name,
+            profile.Utf16UnitsPerBlock,
+            queueDepth);
         return completion.Task;
     }
 
@@ -203,6 +241,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             await foreach (var workItem in _requests.Reader.ReadAllAsync(_shutdown.Token)
                                .ConfigureAwait(false))
             {
+                Interlocked.Decrement(ref _queuedCount);
                 if (workItem.CancellationToken.IsCancellationRequested)
                 {
                     workItem.Completion.TrySetCanceled(workItem.CancellationToken);
@@ -211,7 +250,8 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
 
                 try
                 {
-                    workItem.Completion.TrySetResult(Deliver(workItem));
+                    workItem.Completion.TrySetResult(
+                        await DeliverAsync(workItem).ConfigureAwait(false));
                 }
                 catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
                 {
@@ -238,13 +278,14 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         }
     }
 
-    private TextInjectionResult Deliver(InjectionWorkItem workItem)
+    private async Task<TextInjectionResult> DeliverAsync(InjectionWorkItem workItem)
     {
         var request = workItem.Request;
         var expectedInputCount = checked(request.Text.Length * 2);
         var sentInputCount = 0;
         var utf16Offset = 0;
         var partialContinuations = 0;
+        var sendInputCallCount = 0;
 
         while (utf16Offset < request.Text.Length)
         {
@@ -257,11 +298,14 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                     expectedInputCount,
                     sentInputCount,
                     utf16Offset,
+                    sendInputCallCount,
                     0,
                     "The exact foreground window changed before a block was delivered.");
             }
 
-            var unitCount = Math.Min(BlockUtf16UnitCount, request.Text.Length - utf16Offset);
+            var unitCount = Math.Min(
+                workItem.Profile.Utf16UnitsPerBlock,
+                request.Text.Length - utf16Offset);
             var block = CreateUnicodeInputs(request.Text.AsSpan(utf16Offset, unitCount));
             var blockRecordOffset = 0;
 
@@ -269,6 +313,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
                 var remaining = block[blockRecordOffset..];
+                sendInputCallCount++;
                 var sent = checked((int)Math.Min(
                     _native.SendInput(remaining),
                     (uint)remaining.Length));
@@ -298,6 +343,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                         expectedInputCount,
                         sentInputCount,
                         utf16Offset,
+                        sendInputCallCount,
                         error,
                         message);
                 }
@@ -313,9 +359,12 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                     // paired key-up, then move beyond the already-delivered unit.
                     var acceptedUnit = request.Text[utf16Offset];
                     var cleanup = new[] { CreateInput(acceptedUnit, KeyEventFUnicode | KeyEventFKeyUp) };
-                    var cleanupSent = IsSameForegroundWindow(workItem.TargetWindow)
-                        ? _native.SendInput(cleanup)
-                        : 0;
+                    uint cleanupSent = 0;
+                    if (IsSameForegroundWindow(workItem.TargetWindow))
+                    {
+                        sendInputCallCount++;
+                        cleanupSent = _native.SendInput(cleanup);
+                    }
                     if (cleanupSent == 1)
                     {
                         sentInputCount++;
@@ -331,6 +380,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                             expectedInputCount,
                             sentInputCount,
                             utf16Offset,
+                            sendInputCallCount,
                             _native.GetLastError(),
                             "A partial send left a key down and its cleanup key-up was not accepted.");
                     }
@@ -344,6 +394,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                         expectedInputCount,
                         sentInputCount,
                         utf16Offset,
+                        sendInputCallCount,
                         0,
                         "The exact foreground window changed during a partial continuation.");
                 }
@@ -357,6 +408,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                         expectedInputCount,
                         sentInputCount,
                         utf16Offset,
+                        sendInputCallCount,
                         error,
                         "SendInput remained partial after three positive-progress continuations.");
                 }
@@ -370,8 +422,17 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                     expectedInputCount,
                     sentInputCount,
                     utf16Offset,
+                    sendInputCallCount,
                     0,
                     "The exact foreground window changed after a block was delivered.");
+            }
+
+            if (workItem.Profile.InterBlockDelayMilliseconds > 0)
+            {
+                await Task.Delay(
+                        workItem.Profile.InterBlockDelayMilliseconds,
+                        workItem.CancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -381,6 +442,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             expectedInputCount,
             sentInputCount,
             utf16Offset,
+            sendInputCallCount,
             0,
             null);
     }
@@ -394,6 +456,7 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         int expectedInputCount,
         int sentInputCount,
         int utf16Offset,
+        int sendInputCallCount,
         int win32Error,
         string? message)
     {
@@ -407,6 +470,10 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             expectedInputCount,
             sentInputCount,
             utf16Offset,
+            sendInputCallCount,
+            workItem.Profile.Name,
+            workItem.Profile.Utf16UnitsPerBlock,
+            workItem.QueueDepthAtEnqueue,
             workItem.TargetWindow,
             workItem.TargetProcessId,
             win32Error,
@@ -420,7 +487,11 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             workItem.TargetWindow,
             workItem.TargetProcessId,
             win32Error,
-            message);
+            message,
+            workItem.Profile.Utf16UnitsPerBlock,
+            sendInputCallCount,
+            workItem.QueueDepthAtEnqueue,
+            workItem.Profile.Name);
     }
 
     private static TextInjectionResult Result(
@@ -432,7 +503,11 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         nint targetWindow,
         uint targetProcessId,
         int win32Error,
-        string? message = null) =>
+        string? message = null,
+        int utf16UnitsPerBlock = 0,
+        int sendInputCallCount = 0,
+        int queueDepthAtEnqueue = 0,
+        string deliveryProfile = "") =>
         new(
             status,
             expectedInputCount,
@@ -441,7 +516,11 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             targetWindow,
             targetProcessId,
             win32Error,
-            message);
+            message,
+            utf16UnitsPerBlock,
+            sendInputCallCount,
+            queueDepthAtEnqueue,
+            deliveryProfile);
 
     private static string DescribeWin32Failure(int error, bool partial) =>
         error == 0
@@ -461,12 +540,41 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             VirtualKey = 0,
             ScanCode = character,
             Flags = flags,
+            ExtraInfo = InputMarker,
         },
     };
 
+    private static DeliveryProfile ResolveDeliveryProfile(
+        TextInjectionDeliveryMode requested,
+        string? processImagePath)
+    {
+        var effective = requested;
+        if (requested == TextInjectionDeliveryMode.Automatic)
+        {
+            effective = IsPackagedModernNotepad(processImagePath)
+                ? TextInjectionDeliveryMode.Compatibility
+                : TextInjectionDeliveryMode.Direct;
+        }
+
+        return effective == TextInjectionDeliveryMode.Compatibility
+            ? new DeliveryProfile(
+                "Compatibility",
+                CompatibilityBlockUtf16UnitCount,
+                CompatibilityInterBlockDelayMilliseconds)
+            : new DeliveryProfile("Direct", DirectBlockUtf16UnitCount, 0);
+    }
+
+    private static bool IsPackagedModernNotepad(string? processImagePath) =>
+        !string.IsNullOrWhiteSpace(processImagePath) &&
+        Path.GetFileName(processImagePath)
+            .Equals("Notepad.exe", StringComparison.OrdinalIgnoreCase) &&
+        processImagePath.Contains(
+            @"\WindowsApps\Microsoft.WindowsNotepad_",
+            StringComparison.OrdinalIgnoreCase);
+
     [LoggerMessage(
         LogLevel.Debug,
-        "Queued injection generation={Generation} commit={CommitId} sequence={SequenceId} utf16={Utf16Length} hash={TextHash} hwnd={WindowHandle} pid={ProcessId}.")]
+        "Queued injection generation={Generation} commit={CommitId} sequence={SequenceId} utf16={Utf16Length} hash={TextHash} hwnd={WindowHandle} pid={ProcessId} profile={DeliveryProfile} block={BlockSize} queueDepth={QueueDepth}.")]
     private static partial void LogQueued(
         ILogger logger,
         long generation,
@@ -475,11 +583,14 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         int utf16Length,
         string textHash,
         nint windowHandle,
-        uint processId);
+        uint processId,
+        string deliveryProfile,
+        int blockSize,
+        int queueDepth);
 
     [LoggerMessage(
         LogLevel.Debug,
-        "Injection completed generation={Generation} commit={CommitId} utf16={Utf16Length} hash={TextHash} status={Status} expected={Expected} sent={Sent} offset={Offset} hwnd={WindowHandle} pid={ProcessId} error={Win32Error} diagnostic={Diagnostic}")]
+        "Injection completed generation={Generation} commit={CommitId} utf16={Utf16Length} hash={TextHash} status={Status} expected={Expected} sent={Sent} offset={Offset} calls={SendInputCalls} profile={DeliveryProfile} block={BlockSize} queueDepth={QueueDepth} hwnd={WindowHandle} pid={ProcessId} error={Win32Error} diagnostic={Diagnostic}")]
     private static partial void LogCompleted(
         ILogger logger,
         long generation,
@@ -490,6 +601,10 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         int expected,
         int sent,
         int offset,
+        int sendInputCalls,
+        string deliveryProfile,
+        int blockSize,
+        int queueDepth,
         nint windowHandle,
         uint processId,
         int win32Error,
@@ -502,8 +617,15 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         InjectionRequest Request,
         nint TargetWindow,
         uint TargetProcessId,
+        DeliveryProfile Profile,
+        int QueueDepthAtEnqueue,
         TaskCompletionSource<TextInjectionResult> Completion,
         CancellationToken CancellationToken);
+
+    private sealed record DeliveryProfile(
+        string Name,
+        int Utf16UnitsPerBlock,
+        int InterBlockDelayMilliseconds);
 }
 
 internal interface IWin32InputApi
@@ -517,6 +639,8 @@ internal interface IWin32InputApi
     int GetLastError();
 
     bool IsTargetElevated(uint targetProcessId);
+
+    string? TryGetProcessImagePath(uint targetProcessId);
 }
 
 internal sealed class Win32InputApi : IWin32InputApi
@@ -542,6 +666,23 @@ internal sealed class Win32InputApi : IWin32InputApi
         return currentIntegrity.HasValue &&
                targetIntegrity.HasValue &&
                targetIntegrity.Value > currentIntegrity.Value;
+    }
+
+    public string? TryGetProcessImagePath(uint targetProcessId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(checked((int)targetProcessId));
+            return process.MainModule?.FileName;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or
+                InvalidOperationException or
+                Win32Exception or
+                NotSupportedException)
+        {
+            return null;
+        }
     }
 
     private static int? TryGetIntegrityLevel(uint processId)

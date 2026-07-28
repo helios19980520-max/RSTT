@@ -1,4 +1,5 @@
-using System.Runtime.InteropServices;
+using System.ComponentModel;
+using System.Diagnostics;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Compute;
 using RSTT.Core.Models;
@@ -6,11 +7,22 @@ using RSTT.Core.Models;
 namespace RSTT.Infrastructure;
 
 /// <summary>
-/// Reports hardware and each runtime readiness layer independently. Adapter
-/// presence alone never makes CUDA selectable.
+/// Reports hardware, app-local runtime files, and verified execution as
+/// separate facts. File presence never makes CUDA selectable by itself.
 /// </summary>
 public sealed class WindowsComputeDeviceService : IComputeDeviceService
 {
+    private const string NvidiaDriverUrl = "https://www.nvidia.com/Download/index.aspx";
+    private const string CudaArchiveUrl = "https://developer.nvidia.com/cuda-toolkit-archive";
+    private const string CudnnUrl = "https://developer.nvidia.com/cudnn-downloads";
+    private const string SherpaCudaUrl =
+        "https://k2-fsa.github.io/sherpa/onnx/install/windows/build-cuda.html";
+    private const string OnnxCudaUrl =
+        "https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html";
+    private const string AcceleratorPackUrl =
+        "https://github.com/helios19980520-max/RSTT/releases";
+    private const string VcRuntimeUrl =
+        "https://aka.ms/vs/17/release/vc_redist.x64.exe";
     private readonly IHardwareDetectionService _hardware;
     private IReadOnlyList<ComputeBackendProbe>? _cached;
 
@@ -39,7 +51,7 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
             true);
         var probes = new List<ComputeBackendProbe>
         {
-            new(ComputeBackend.Cpu, true, "CPU sherpa runtime is available.", cpu),
+            new(ComputeBackend.Cpu, true, "The CPU sherpa runtime is available.", cpu),
         };
         var nvidia = hardware.Adapters.FirstOrDefault(adapter =>
             adapter.Vendor.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase));
@@ -53,19 +65,17 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
         }
 
         var layers = ProbeCudaRuntimeLayers(nvidia);
-        var dependenciesPresent = layers
-            .Where(layer => layer.Layer is ComputeReadinessLayer.CudaRuntime or
+        var firstBlocking = layers.FirstOrDefault(layer =>
+            (layer.Layer is ComputeReadinessLayer.CudaRuntime or
                 ComputeReadinessLayer.Cudnn or
                 ComputeReadinessLayer.SherpaCudaRuntime or
-                ComputeReadinessLayer.ProviderLoad)
-            .All(layer => layer.IsReady);
-        var firstMissing = layers.FirstOrDefault(layer => !layer.IsReady);
+                ComputeReadinessLayer.ProviderLoad) &&
+            !layer.IsReady);
         probes.Add(new ComputeBackendProbe(
             ComputeBackend.Cuda,
             false,
-            dependenciesPresent
-                ? "CUDA dependencies are present, but recognizer load, warmup, and decode have not been verified; CUDA remains unavailable."
-                : firstMissing?.Status ?? "CUDA worker dependencies are incomplete.",
+            firstBlocking?.Status ??
+            "CUDA files are present, but worker load, warmup, and decode are not verified.",
             nvidia));
         return _cached = probes;
     }
@@ -93,7 +103,9 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 new(
                     ComputeReadinessLayer.Hardware,
                     false,
-                    "No physical NVIDIA adapter was detected through DXGI."),
+                    "No physical NVIDIA adapter was detected through DXGI.",
+                    State: ComputeLayerState.Missing,
+                    RemediationUrl: NvidiaDriverUrl),
             }
             : ProbeCudaRuntimeLayers(nvidia);
         if (model is not null)
@@ -103,7 +115,11 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 model.CudaSupported,
                 model.CudaSupported
                     ? $"{model.DisplayName} declares CUDA compatibility."
-                    : $"{model.DisplayName} is CPU-only."));
+                    : $"{model.DisplayName} is CPU-only.",
+                model.Revision,
+                model.CudaSupported
+                    ? ComputeLayerState.Ready
+                    : ComputeLayerState.Incompatible));
         }
 
         var selection = model is null
@@ -122,76 +138,284 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 : "CPU Active");
     }
 
-    private static List<ComputeLayerStatus> ProbeCudaRuntimeLayers(ComputeDeviceInfo adapter)
+    private static List<ComputeLayerStatus> ProbeCudaRuntimeLayers(
+        ComputeDeviceInfo adapter)
     {
-        var cudaRuntime = CanLoad("cudart64_12.dll", out var cudaMessage);
-        var cudnn = CanLoad("cudnn64_9.dll", out var cudnnMessage);
-        var provider = CanLoad("onnxruntime_providers_cuda.dll", out var providerMessage);
-        var cudaWorker = File.Exists(Path.Combine(
+        var supplemental = TryGetNvidiaInfo();
+        var workerRoot = Path.Combine(
             AppContext.BaseDirectory,
             "workers",
-            "cuda-12",
-            "RSTT.Speech.Worker.exe"));
+            "sherpa-cuda12",
+            "1.13.4");
+        var cudaWorkerPath = Path.Combine(workerRoot, "RSTT.Speech.Worker.exe");
+        var whisperWorkerRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "workers",
+            "whisper-cuda12",
+            "1.9.1");
+        var whisperWorkerPath = Path.Combine(
+            whisperWorkerRoot,
+            "RSTT.Whisper.Cuda12.Worker.exe");
+        var vcRuntimePath = Path.Combine(Environment.SystemDirectory, "vcruntime140.dll");
+        var cuda = FindLibrary("cudart64_12.dll", workerRoot);
+        var anyCuda = cuda.Path.Length == 0
+            ? FindAnyCudaRuntime()
+            : RuntimeFile.Empty;
+        var cudnn = FindLibrary("cudnn64_9.dll", workerRoot);
+        var provider = FindLibrary("onnxruntime_providers_cuda.dll", workerRoot);
+        var workerExists = File.Exists(cudaWorkerPath);
+
+        var cudaState = cuda.Path.Length > 0
+            ? ComputeLayerState.Ready
+            : anyCuda.Path.Length > 0
+                ? ComputeLayerState.Incompatible
+                : ComputeLayerState.Missing;
+        var cudaStatus = cudaState switch
+        {
+            ComputeLayerState.Ready =>
+                "The required CUDA 12 runtime is present.",
+            ComputeLayerState.Incompatible =>
+                $"CUDA {anyCuda.Version} is installed, but this sherpa worker requires CUDA 12.x.",
+            _ => "cudart64_12.dll is missing.",
+        };
 
         return
         [
             new(
+                ComputeReadinessLayer.SystemRuntime,
+                File.Exists(vcRuntimePath),
+                File.Exists(vcRuntimePath)
+                    ? "Microsoft Visual C++ 2015-2022 x64 runtime is present."
+                    : "Microsoft Visual C++ 2015-2022 x64 runtime is missing.",
+                File.Exists(vcRuntimePath)
+                    ? FileVersionInfo.GetVersionInfo(vcRuntimePath).FileVersion ?? string.Empty
+                    : string.Empty,
+                File.Exists(vcRuntimePath)
+                    ? ComputeLayerState.Ready
+                    : ComputeLayerState.Missing,
+                "Visual C++ 2015-2022 x64",
+                File.Exists(vcRuntimePath) ? vcRuntimePath : string.Empty,
+                VcRuntimeUrl),
+            new(
                 ComputeReadinessLayer.Hardware,
                 true,
-                $"{adapter.Name} detected (VEN_{adapter.VendorId:X4}, DEV_{adapter.DeviceId:X4}, {adapter.DedicatedMemory / 1024d / 1024d:N0} MiB dedicated)."),
+                $"{adapter.Name} detected (VEN_{adapter.VendorId:X4}, DEV_{adapter.DeviceId:X4}, {adapter.DedicatedMemory / 1024d / 1024d:N0} MiB dedicated).",
+                supplemental.ComputeCapability,
+                ComputeLayerState.Ready),
             new(
                 ComputeReadinessLayer.Driver,
                 true,
-                string.IsNullOrWhiteSpace(adapter.DriverVersion)
-                    ? "NVIDIA adapter is available; driver version was not exposed by DXGI."
-                    : $"NVIDIA driver {adapter.DriverVersion} is installed.",
-                adapter.DriverVersion),
+                supplemental.DriverVersion.Length == 0
+                    ? "The NVIDIA adapter is active; its driver version was not available."
+                    : $"NVIDIA driver {supplemental.DriverVersion} is installed.",
+                supplemental.DriverVersion,
+                ComputeLayerState.Ready,
+                RemediationUrl: NvidiaDriverUrl),
             new(
                 ComputeReadinessLayer.CudaRuntime,
-                cudaRuntime,
-                cudaMessage,
-                "12.x"),
+                cuda.Path.Length > 0,
+                cudaStatus,
+                cuda.Path.Length > 0 ? "12.x" : anyCuda.Version,
+                cudaState,
+                "12.x",
+                cuda.Path.Length > 0 ? cuda.Path : anyCuda.Path,
+                CudaArchiveUrl),
             new(
                 ComputeReadinessLayer.Cudnn,
-                cudnn,
-                cudnnMessage,
-                "9.x"),
+                cudnn.Path.Length > 0,
+                cudnn.Path.Length > 0
+                    ? "The required cuDNN 9 runtime is present."
+                    : "cudnn64_9.dll is missing.",
+                cudnn.Path.Length > 0 ? "9.x" : string.Empty,
+                cudnn.Path.Length > 0
+                    ? ComputeLayerState.Ready
+                    : ComputeLayerState.Missing,
+                "9.x",
+                cudnn.Path,
+                CudnnUrl),
             new(
                 ComputeReadinessLayer.SherpaCudaRuntime,
-                cudaWorker,
-                cudaWorker
-                    ? "The versioned CUDA 12 worker is installed."
-                    : "The optional versioned RSTT CUDA Accelerator Pack is not installed.",
-                "sherpa-onnx 1.13.4"),
+                workerExists,
+                workerExists
+                    ? "The versioned sherpa CUDA worker is installed."
+                    : "The optional RSTT CUDA Accelerator Pack is not installed.",
+                workerExists ? "sherpa-onnx 1.13.4" : string.Empty,
+                workerExists
+                    ? ComputeLayerState.Ready
+                    : ComputeLayerState.Missing,
+                "sherpa-onnx 1.13.4 / CUDA 12.x",
+                workerExists ? cudaWorkerPath : string.Empty,
+                workerExists ? SherpaCudaUrl : AcceleratorPackUrl),
+            new(
+                ComputeReadinessLayer.WhisperCudaRuntime,
+                File.Exists(whisperWorkerPath),
+                File.Exists(whisperWorkerPath)
+                    ? "The versioned whisper.cpp CUDA 12 worker is installed."
+                    : "The optional Whisper CUDA worker is not installed.",
+                File.Exists(whisperWorkerPath) ? "Whisper.net 1.9.1 / whisper.cpp" : string.Empty,
+                File.Exists(whisperWorkerPath)
+                    ? ComputeLayerState.Ready
+                    : ComputeLayerState.Missing,
+                "Whisper.net 1.9.1 / CUDA 12.x",
+                File.Exists(whisperWorkerPath) ? whisperWorkerPath : string.Empty,
+                AcceleratorPackUrl),
             new(
                 ComputeReadinessLayer.ProviderLoad,
-                provider,
-                providerMessage),
+                false,
+                provider.Path.Length > 0
+                    ? "The CUDA provider file is present; an isolated worker self-test has not loaded it yet."
+                    : "onnxruntime_providers_cuda.dll is missing.",
+                provider.Path.Length > 0 ? "File present" : string.Empty,
+                provider.Path.Length > 0
+                    ? ComputeLayerState.NotTested
+                    : ComputeLayerState.Missing,
+                "Matching ONNX Runtime CUDA provider",
+                provider.Path,
+                OnnxCudaUrl),
             new(
                 ComputeReadinessLayer.RecognizerLoad,
                 false,
-                "Not tested in this process."),
+                "Not tested by an isolated worker.",
+                State: ComputeLayerState.NotTested),
             new(
                 ComputeReadinessLayer.Warmup,
                 false,
-                "Not tested in this process."),
+                "Not tested by an isolated worker.",
+                State: ComputeLayerState.NotTested),
             new(
                 ComputeReadinessLayer.ActiveInference,
                 false,
-                "CUDA Active is reported only after a successful decode."),
+                "CUDA Active is reported only after a successful model decode.",
+                State: ComputeLayerState.NotTested),
         ];
     }
 
-    private static bool CanLoad(string libraryName, out string message)
+    private static RuntimeFile FindLibrary(string fileName, string workerRoot)
     {
-        if (!NativeLibrary.TryLoad(libraryName, out var handle))
+        var localPath = Path.Combine(workerRoot, fileName);
+        if (File.Exists(localPath))
         {
-            message = $"{libraryName} could not be loaded.";
-            return false;
+            return new RuntimeFile(localPath, ExtractRuntimeVersion(fileName));
         }
 
-        NativeLibrary.Free(handle);
-        message = $"{libraryName} loaded successfully.";
-        return true;
+        foreach (var item in (
+                     Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                 .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var directory = item.Trim().Trim('"');
+            if (directory.Length == 0)
+            {
+                continue;
+            }
+
+            var path = Path.Combine(directory, fileName);
+            if (File.Exists(path))
+            {
+                return new RuntimeFile(path, ExtractRuntimeVersion(fileName));
+            }
+        }
+
+        return RuntimeFile.Empty;
+    }
+
+    private static RuntimeFile FindAnyCudaRuntime()
+    {
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (var item in path.Split(
+                     Path.PathSeparator,
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            var directory = item.Trim().Trim('"');
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            try
+            {
+                var candidate = Directory
+                    .EnumerateFiles(directory, "cudart64_*.dll")
+                    .OrderByDescending(static value => value, StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault();
+                if (candidate is not null)
+                {
+                    return new RuntimeFile(
+                        candidate,
+                        ExtractRuntimeVersion(Path.GetFileName(candidate)));
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            catch (IOException)
+            {
+            }
+        }
+
+        return RuntimeFile.Empty;
+    }
+
+    private static string ExtractRuntimeVersion(string fileName)
+    {
+        const string cudaPrefix = "cudart64_";
+        if (fileName.StartsWith(cudaPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var version = Path.GetFileNameWithoutExtension(fileName)[cudaPrefix.Length..];
+            return version.Length == 0 ? string.Empty : $"{version}.x";
+        }
+
+        const string cudnnPrefix = "cudnn64_";
+        if (fileName.StartsWith(cudnnPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var version = Path.GetFileNameWithoutExtension(fileName)[cudnnPrefix.Length..];
+            return version.Length == 0 ? string.Empty : $"{version}.x";
+        }
+
+        return string.Empty;
+    }
+
+    private static NvidiaInfo TryGetNvidiaInfo()
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo("nvidia-smi")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            startInfo.ArgumentList.Add(
+                "--query-gpu=driver_version,compute_cap");
+            startInfo.ArgumentList.Add("--format=csv,noheader,nounits");
+            using var process = Process.Start(startInfo);
+            if (process is null || !process.WaitForExit(2_000))
+            {
+                return NvidiaInfo.Empty;
+            }
+
+            var fields = process.StandardOutput.ReadToEnd()
+                .Split(',', StringSplitOptions.TrimEntries);
+            return fields.Length >= 2
+                ? new NvidiaInfo(fields[0], fields[1])
+                : NvidiaInfo.Empty;
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or
+                InvalidOperationException or
+                IOException)
+        {
+            return NvidiaInfo.Empty;
+        }
+    }
+
+    private sealed record RuntimeFile(string Path, string Version)
+    {
+        public static RuntimeFile Empty { get; } = new(string.Empty, string.Empty);
+    }
+
+    private sealed record NvidiaInfo(string DriverVersion, string ComputeCapability)
+    {
+        public static NvidiaInfo Empty { get; } = new(string.Empty, string.Empty);
     }
 }

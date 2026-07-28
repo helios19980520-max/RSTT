@@ -1,143 +1,153 @@
-# RSTT production hardening report
+# RSTT production completion report
 
 Date: 2026-07-28
 
-This report distinguishes reproduced evidence from unfinished production gates.
-It does not call a model supported or a backend active without a real decode.
+This report contains the requested 23 evidence items. “Verified” means reproduced
+in this workspace. “Pending” is never presented as a production claim.
 
-## Required evidence
+## Evidence
 
-1. **Repeated-character root cause.** The screenshot-era failure's single
-   historical root cause is not proven. The previous Notepad test returned
-   early when a user-owned Notepad existed, and Release logs lacked commit,
-   generated-record, accepted-record, offset, and HWND correlation. The unsafe
-   ambiguity was partial-send handling: delivery could stop without a resumable
-   offset, and callers had no structured way to avoid replay. The hardened
-   implementation makes replay impossible and the new harness has not
-   reproduced corruption.
+1. **Repeated-character root cause — verified.** Commit/request text, generated
+   records, native messages and `SendInput` acceptance are exact. Packaged
+   Notepad 11.2604.5.0 first diverges afterward: multi-unit or insufficiently
+   separated `VK_PACKET` delivery makes Notepad substitute repeated earlier
+   characters. The first saved-file divergence was reproduced at UTF-16 offset
+   6. The measured safe profile is one paired UTF-16 unit per call plus a 20 ms
+   yield after every unit and commit boundary.
 
-2. **Exact injection fix.** `TranscriptCommit.Text` is assigned unchanged to
-   `InjectionRequest.Text`. A single bounded worker retains the exact HWND,
-   emits paired Unicode down/up records in 64-UTF-16-unit blocks, advances only
-   accepted offsets, performs odd-key cleanup, allows at most three
-   positive-progress continuations, and aborts on target change. Self-focused
-   commits are dropped before enqueueing.
+2. **Commit/request identity — verified.** Generation, commit and source
+   sequence IDs are assigned once. `TranscriptCommit.Text` is assigned directly
+   to `InjectionRequest.Text`; UTF-16 lengths and truncated SHA-256 values are
+   logged without Release transcript text.
 
-3. **Missing-final-word root cause.** Two concrete stop defects were confirmed:
-   coordinator cancellation could end audio consumption before queued tail
-   audio reached sherpa, and `IsListening` became false before the engine
-   emitted its terminal result, causing the result/injection gates to discard a
-   valid final commit.
+3. **Native record/message identity — verified.** Every record carries the RSTT
+   `dwExtraInfo` marker. The native host records `WM_KEYDOWN`, `WM_KEYUP`,
+   `WM_CHAR`, scan value and repeat count. It observes one marked down/up pair
+   per UTF-16 unit and repeat count 1.
 
-4. **Endpoint/finalization fix.** Stop remains in `Completing` while final
-   commits are accepted, stops capture, drains conversion and normalized audio,
-   drains audio into the engine, calls `OnlineStream.InputFinished()`, decodes
-   remaining work, emits the terminal hypothesis, drains result/commit/injection
-   channels, then marks the generation stopped. A five-second overall timeout
-   records the incomplete stage before hard cancellation. At natural online
-   endpoints the final result is emitted before `Reset(stream)`.
+4. **Partial-send safety — verified.** Accepted records are never replayed.
+   Even partial sends advance complete units. Odd partial sends receive only the
+   missing cleanup key-up. Three positive-progress continuations are the limit;
+   no whole commit retry exists.
 
-5. **Transcript architecture.** Typed
-   `RecognitionHypothesis -> TranscriptSnapshot/TranscriptCommit ->
-   InjectionRequest` records carry generation, sequence, and commit identity.
-   Online engines use two-confirmation whole-word stability with two-word
-   holdback and unconditional final flush. Offline/VAD engines commit final
-   segments only.
+5. **Target/focus safety — verified.** Requests retain exact HWND/PID. The HWND
+   is checked around every block. Target changes abort the remainder, self-focus
+   is dropped before enqueue, UIPI uses integrity inspection, and no clipboard
+   or changed-target replay is used.
 
-6. **Injection architecture.** See `docs/TEXT_INJECTION.md`. Results expose
-   `Success`, `Partial`, `TargetChanged`, `SelfFocused`, `ElevatedTarget`,
-   `Unavailable`, and `Failed` with record counts, UTF-16 offset, HWND/PID,
-   Win32 error, and diagnostics.
+6. **Modern Notepad acceptance — verified.** The unique-temp-document runner
+   passed 100 commits and 6,500 UTF-16 units with exact UI Automation and saved
+   file equality. Delivery took 208,593.853 ms. Evidence:
+   `artifacts/test-results/notepad-integration.json`.
 
-7. **Exact-insertion tests.** Release tests pass 73/73 with zero skips. The
-   dedicated native edit-control process verifies Latin, punctuation, Japanese,
-   Korean, accented Latin, emoji/surrogates, long text, consecutive commits,
-   and 100 exact sentence repetitions. Deterministic tests cover all requested
-   complete/partial/focus/elevation/order/queue/generation cases.
+7. **Single instance — implemented and verified from the published output.** A
+   named mutex is acquired before service construction, hotkeys, capture or
+   injection workers. A second launch signalled the primary process and exited
+   with code 0 while the primary remained alive with its window handle.
 
-8. **GPU detected.** DXGI and supplemental NVIDIA tooling report NVIDIA GeForce
-   RTX 2060, vendor `0x10DE`, 6,144 MiB dedicated memory, driver 595.71.
+8. **Final-tail lifecycle — verified by automated tests.** Completing accepts
+   final commits; capture and normalized queues drain before terminal input;
+   terminal result emission precedes reset; result/commit/injection queues drain
+   before generation stop; stale generations are rejected.
 
-9. **CUDA runtime.** NVIDIA tooling reports driver CUDA capability, and CUDA
-   toolkit 13.3 is installed, but the required `cudart64_12.dll` is not on PATH.
-   This is **not** a usable RSTT CUDA runtime.
+9. **GPU hardware — verified.** RTX 2060, vendor `0x10DE`, 6,144 MiB dedicated,
+   driver 595.71, compute capability 7.5.
 
-10. **cuDNN status.** Required `cudnn64_9.dll` is absent.
+10. **Installed CUDA — verified but incompatible for sherpa.** CUDA toolkit
+    13.3 provides `cudart64_13.dll`. The required `cudart64_12.dll` is absent.
 
-11. **sherpa GPU runtime.** Not installed or published. The clean publish
-    contains CPU `sherpa-onnx-c-api.dll`, `sherpa-onnx.dll`, and
-    `onnxruntime.dll`; it contains no CUDA provider or CUDA dependency DLLs.
+11. **cuDNN/provider — missing.** `cudnn64_9.dll` and
+    `onnxruntime_providers_cuda.dll` are absent. File presence, provider load,
+    recognizer load, warmup and active decode are reported separately.
 
-12. **Actual active provider.** CPU. RSTT shows `CUDA Active` only after a
-    successful decode using provider `cuda`; no such decode occurred.
+12. **Structured diagnostics — implemented.** Settings shows System/VC++, GPU,
+    driver, CUDA, cuDNN, sherpa worker, Whisper worker, provider, model,
+    recognizer, warmup and active inference cards with state, required/detected
+    version, path, fallback reason, Accelerator Pack action and official links.
+    Copied diagnostics exclude transcript/audio.
 
-13. **CPU fallback.** CPU is always available in the base package. Auto/explicit
-    CUDA selection reports layer-specific missing dependencies and selects CPU.
-    The published CPU executable launched and remained alive for the five-second
-    smoke window without CUDA dependencies.
+13. **Actual active backend — CPU.** No RTX 2060 CUDA ASR decode has passed.
+    `CUDA Active` is shown only for a session context set after a verified CUDA
+    worker model load, warmup and decode.
 
-14. **Genuinely supported models.** Three: Nemotron Streaming English 0.6B INT8
-    560 ms, Nemotron 3.5 Streaming Multilingual 0.6B INT8 560 ms, and Parakeet
-    Unified English 0.6B INT8 1120 ms. Four additional requested families are
-    intentionally non-actionable Experimental records, not fake supported
-    models.
+14. **Worker protocol — implemented and tested.** Version 1 is little-endian,
+    length-prefixed and bounded. It supports handshake, load, warmup, start,
+    binary float32 audio, finish, unload, shutdown, ping, ready, hypothesis,
+    performance and structured fault messages. Short-read and audio round trips
+    are tested.
 
-15. **Runtime mode.** Nemotron English and Nemotron 3.5 are Native Streaming;
-    Parakeet Unified is Buffered Streaming. Parakeet TDT v3, Qwen3-ASR,
-    Moonshine Tiny, and Moonshine Base are designed for Segmented Realtime/VAD
-    but remain unvalidated.
+15. **Whisper workers — implemented.** `whisper-cpu/1.9.1` is self-contained in
+    the base build. `whisper-cuda12/1.9.1` is a separate optional project.
+    Auto terminates a failed CUDA process before CPU fallback. The CPU worker
+    process handshake is verified; real model decode is pending.
 
-16. **Download sizes.** Verified catalogue payloads: Nemotron English
-    approximately 631 MiB, Nemotron 3.5 approximately 651 MiB, and Parakeet
-    Unified approximately 632 MiB. Experimental rows show no downloadable size
-    until pinned files, byte counts, and SHA-256 values are verified.
+16. **Qwen integration — actionable Preview.** Exact revision and seven
+    artifact size/SHA-256 values are pinned. Nested tokenizer installation is
+    supported, the tokenizer directory is mapped to sherpa, feature dimension is
+    128, Silero VAD policy is 200/500 ms with a 20-second maximum, and commits
+    are final-segment only. Real-audio/RTF validation remains pending.
 
-17. **Models UI.** The horizontal carousel is replaced with one virtualized
-    vertical list with horizontal scrolling disabled, compact rows, search,
-    All/Installed/Streaming/Multilingual/CUDA-capable filters, inline state and
-    actions, details, and separate Use now/Set default semantics.
+17. **Whisper Large v3 Turbo integration — actionable Preview.** Q5_0 is the
+    default family profile (574,041,195 bytes,
+    SHA-256 `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`);
+    full is optional (1,624,555,275 bytes,
+    SHA-256 `1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69`).
+    Both are transcription-only, segmented realtime and auto/manual language.
 
-18. **Recognition correctness.** Final-tail loss is addressed at policy,
-    endpoint, and session-stop boundaries. Session generation IDs suppress late
-    prior-session work. Online and offline engines have distinct commit and
-    endpoint policies. No new word-error-rate claim is made without a licensed
-    corpus run.
+18. **Factory routing — implemented.** Engine selection is descriptor-driven:
+    online sherpa, offline/VAD sherpa or isolated `WhisperCppEngine`. The view
+    model contains no model-family switch.
 
-19. **Performance measurements.** The latest existing local CPU measurements
-    remain in `docs/PERFORMANCE.md` (Nemotron RTF 0.329, decode P50/P95
-    185.4/198.1 ms in the recorded end-to-end run). They predate this change set
-    and were not relabeled as new measurements.
+19. **Model workflow/UI — implemented.** One vertical virtualized list, no
+    horizontal carousel, search/filters, compact rows, details, row-local
+    download state and distinct Use now/Set default semantics. Preview is
+    downloadable/actionable but is not labeled Supported.
 
-20. **Long-session result.** The repository records a prior 30-minute CPU run:
-    RTF 0.333, CPU average/P95/max 1.907/2.524/3.413%, zero dropped audio and
-    zero watchdog stalls. A new 30-minute run of this exact revision, including
-    exact injection counters, remains required.
+20. **Performance telemetry — implemented, current long run pending.** Injection
+    rate, average UTF-16 length, `SendInput` calls/second, queue high-watermark
+    and failures join existing CPU, memory, queue, decode and RTF metrics. The
+    prior 30-minute CPU figures remain in `docs/PERFORMANCE.md`; they predate
+    this revision.
 
-21. **Known limitations.** No isolated named-pipe backend worker, CUDA
-    Accelerator Pack, provider warmup/decode, four new pinned model
-    integrations, licensed Common Voice corpus, per-model benchmark
-    persistence, Debug pipeline inspector, responsive details drawer/modal, or
-    current-revision 30-minute acceptance run is complete.
+21. **Known limitations.** Sherpa CPU still runs in-process. A complete sherpa
+    CUDA worker/pack, dependency/licence review, Qwen/Whisper real-audio matrix,
+    current 30-minute run, full Common Voice corpus, benchmark persistence and
+    current RTX 2060 CUDA evidence remain open. Notepad Compatibility is exact
+    but intentionally slow at about 50 UTF-16 units/second.
 
-22. **Release publish command.**
+22. **CPU publish command.**
 
     `dotnet publish src\RSTT.App\RSTT.App.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishProfile=win-x64`
 
-23. **Published executable.**
+23. **Published executable and optional worker paths — verified.**
 
-    `E:\workSpace\RSTT\artifacts\publish\win-x64\RSTT.App.exe`
+    - `E:\workSpace\RSTT\artifacts\publish\win-x64\RSTT.App.exe`
+    - `E:\workSpace\RSTT\artifacts\publish\win-x64\workers\whisper-cpu\1.9.1\RSTT.Whisper.Worker.exe`
+    - Optional CUDA developer publish:
+      `E:\workSpace\RSTT\artifacts\publish\accelerator-pack\workers\whisper-cuda12\1.9.1\RSTT.Whisper.Cuda12.Worker.exe`
 
-## Final validation performed
+## Final validation
 
 - `dotnet restore RSTT.sln`: passed.
-- Debug build: passed with zero warnings/errors.
-- Debug tests: 73/73, zero skipped.
-- Release build: passed with zero warnings/errors.
-- Release tests: 73/73, zero skipped.
-- Clean self-contained win-x64 CPU publish: passed, 270 top-level files,
-  174,816,769 bytes.
-- Published executable smoke test: process remained alive after five seconds
-  and was then stopped by the validation script.
+- Debug build: passed, zero warnings and zero errors.
+- Debug tests: 80/80 passed, zero skipped.
+- Release build: passed, zero warnings and zero errors.
+- Release tests: 80/80 passed, zero skipped (Core 42, Speech 38).
+- CPU publish: passed. The output contains 710 files / 276,394,405 bytes,
+  including the versioned Whisper CPU worker, and no CUDA/cuDNN-named files.
+- Optional Whisper CUDA 12 worker developer publish: passed. The output contains
+  202 files / 1,210,089,819 bytes. This is not a complete or release-eligible
+  Accelerator Pack.
+- Clean-output startup: `RSTT.App.exe` remained alive after five seconds and
+  created main window handle `0x540EC6`; the exact test process was then stopped.
+- Published single-instance check: the primary remained alive with a real window
+  handle; the second launch exited with code 0.
 
-The CUDA worker/pack publish was not run because no CUDA worker/pack project
-exists and the required runtime/licence gate has not passed.
+The first CPU publish attempt exposed a packaging collision: worker files were
+assigned a non-item-qualified relative path. The mapping now retains each
+worker file's recursive path under `workers\whisper-cpu\1.9.1`; the corrected
+publish passed.
+
+A complete Accelerator Pack is not release-eligible until the sherpa CUDA
+12/cuDNN 9 worker and notices are present and both CUDA workers pass real model
+decode.

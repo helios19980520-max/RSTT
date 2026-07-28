@@ -22,11 +22,13 @@ public sealed record ComputeDeviceInfo(
 
 public enum ComputeReadinessLayer
 {
+    SystemRuntime,
     Hardware,
     Driver,
     CudaRuntime,
     Cudnn,
     SherpaCudaRuntime,
+    WhisperCudaRuntime,
     ProviderLoad,
     ModelCompatibility,
     RecognizerLoad,
@@ -34,11 +36,25 @@ public enum ComputeReadinessLayer
     ActiveInference,
 }
 
+public enum ComputeLayerState
+{
+    Ready,
+    Active,
+    Missing,
+    Incompatible,
+    Failed,
+    NotTested,
+}
+
 public sealed record ComputeLayerStatus(
     ComputeReadinessLayer Layer,
     bool IsReady,
     string Status,
-    string Version = "");
+    string Version = "",
+    ComputeLayerState State = ComputeLayerState.NotTested,
+    string RequiredVersion = "",
+    string DetectedPath = "",
+    string RemediationUrl = "");
 
 public sealed record HardwareDetectionReport(
     IReadOnlyList<ComputeDeviceInfo> Adapters,

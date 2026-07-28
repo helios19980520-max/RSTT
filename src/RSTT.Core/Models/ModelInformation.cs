@@ -28,6 +28,11 @@ public sealed record ModelInformation(
                 : IsInstalled
                     ? "Installed"
                     : "Available",
+            ModelIntegrationStatus.Preview => IsActive
+                ? "Active preview"
+                : IsInstalled
+                    ? "Installed preview"
+                    : "Preview",
             ModelIntegrationStatus.Experimental => "Experimental",
             ModelIntegrationStatus.ComingLater => "Coming later",
             _ => "Unknown",

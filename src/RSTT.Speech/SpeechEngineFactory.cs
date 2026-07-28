@@ -27,15 +27,21 @@ public sealed class SpeechEngineFactory : ISpeechEngineFactory
     }
 
     public ISpeechRecognitionEngine Create(ModelDescriptor descriptor) =>
-        descriptor.StreamingMode is SpeechStreamingMode.SegmentedVad or
-            SpeechStreamingMode.Offline
-            ? new SherpaOfflineVadEngine(
+        string.Equals(descriptor.Engine, "whisper-cpp", StringComparison.OrdinalIgnoreCase)
+            ? new WhisperCppEngine(
+                _models,
+                _settings,
+                _performance,
+                _loggerFactory.CreateLogger<WhisperCppEngine>())
+            : descriptor.StreamingMode is SpeechStreamingMode.SegmentedVad or
+                SpeechStreamingMode.Offline
+                ? new SherpaOfflineVadEngine(
                 _models,
                 _settings,
                 _compute,
                 _performance,
                 _loggerFactory.CreateLogger<SherpaOfflineVadEngine>())
-            : new SherpaOnlineEngine(
+                : new SherpaOnlineEngine(
                 _models,
                 _settings,
                 _compute,

@@ -513,6 +513,11 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                 var result = await _textInjection
                     .InjectAsync(request, cancellationToken)
                     .ConfigureAwait(false);
+                _performance.RecordInjectionAttempt(
+                    request.Text.Length,
+                    result.SendInputCallCount,
+                    result.QueueDepthAtEnqueue,
+                    result.Succeeded);
                 if (result.Succeeded)
                 {
                     _performance.RecordInjection();

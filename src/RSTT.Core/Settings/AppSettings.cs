@@ -28,6 +28,9 @@ public sealed class AppSettings
 
     public bool TextInjectionEnabled { get; set; } = true;
 
+    public TextInjectionDeliveryMode TextInjectionDeliveryMode { get; set; } =
+        TextInjectionDeliveryMode.Automatic;
+
     public bool CaptionOverlayEnabled { get; set; } = true;
 
     public bool StartMinimized { get; set; }
@@ -67,4 +70,11 @@ public sealed class AppSettings
     public string ToggleInjectionHotkey { get; set; } = "Ctrl+Alt+T";
 
     public string ToggleCaptionsHotkey { get; set; } = "Ctrl+Alt+C";
+}
+
+public enum TextInjectionDeliveryMode
+{
+    Automatic,
+    Direct,
+    Compatibility,
 }

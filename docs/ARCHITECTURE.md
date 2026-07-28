@@ -17,7 +17,7 @@ Windows render endpoint
   └─ bounded ordered injection channel (128)
        → exact-HWND/UIPI checks
        → bounded single-consumer injection channel (64)
-       → 64-unit UTF-16 SendInput blocks
+       → Direct 64-unit blocks or measured Notepad compatibility pacing
 ```
 
 ## Assembly ownership
@@ -27,11 +27,15 @@ Windows render endpoint
 | `RSTT.Core` | Contracts, settings, model/compute metadata, state machine, transcript policies, caption history |
 | `RSTT.Audio` | Device enumeration, WASAPI capture, pooled packet transport, conversion, metering |
 | `RSTT.Speech` | Embedded catalog, managed download/install lifecycle, sherpa-onnx resources |
+| `RSTT.Whisper.Worker` | Versioned isolated whisper.cpp CPU worker |
+| `RSTT.Whisper.Cuda12.Worker` | Optional isolated whisper.cpp CUDA 12 worker |
 | `RSTT.Input` | Foreground safety and Win32 Unicode `SendInput` |
 | `RSTT.Infrastructure` | App paths, atomic settings, compute probes, performance monitor, rolling logs |
 | `RSTT.App` | WPF shell, view model, coordinator, caption window, tray, and hotkeys |
 
-Core is UI-independent. Native object lifetime remains inside Speech, and WPF objects remain inside App.
+Core is UI-independent. Sherpa native lifetime currently remains inside Speech.
+Whisper native state exists only in its selected worker process. WPF objects
+remain inside App.
 
 ## Callback and backpressure rules
 
@@ -113,6 +117,6 @@ recognizer is unloaded before active files are deleted or replaced.
 The caption overlay is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, uses
 `ShowActivated=false`, and does not use activation toggling tricks. `SendInput`
 retains and verifies the exact foreground HWND around every 64 UTF-16-unit
-block.
+Direct block or every paced Notepad compatibility unit.
 
 Raw audio, partial hypotheses, and caption objects are transient. Settings are atomically replaced. Logs contain operational metadata but not raw audio or full conversations.

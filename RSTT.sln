@@ -20,6 +20,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RSTT.Speech.Tests", "tests\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RSTT.Input.TestHost", "tests\RSTT.Input.TestHost\RSTT.Input.TestHost.csproj", "{9A34A6E9-C0D9-4AD4-86BA-B729BD4E5719}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RSTT.Whisper.Worker", "src\RSTT.Whisper.Worker\RSTT.Whisper.Worker.csproj", "{2D563A11-D786-4D28-96F9-16821D54C97F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RSTT.Whisper.Cuda12.Worker", "src\RSTT.Whisper.Cuda12.Worker\RSTT.Whisper.Cuda12.Worker.csproj", "{B476BF7D-203B-45DC-916F-B345EE880EF7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RSTT.Notepad.IntegrationRunner", "tests\RSTT.Notepad.IntegrationRunner\RSTT.Notepad.IntegrationRunner.csproj", "{52943C11-7C8A-44C0-867C-27B3E06773CC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -62,5 +68,17 @@ Global
 		{9A34A6E9-C0D9-4AD4-86BA-B729BD4E5719}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9A34A6E9-C0D9-4AD4-86BA-B729BD4E5719}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9A34A6E9-C0D9-4AD4-86BA-B729BD4E5719}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2D563A11-D786-4D28-96F9-16821D54C97F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2D563A11-D786-4D28-96F9-16821D54C97F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2D563A11-D786-4D28-96F9-16821D54C97F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2D563A11-D786-4D28-96F9-16821D54C97F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B476BF7D-203B-45DC-916F-B345EE880EF7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B476BF7D-203B-45DC-916F-B345EE880EF7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B476BF7D-203B-45DC-916F-B345EE880EF7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B476BF7D-203B-45DC-916F-B345EE880EF7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{52943C11-7C8A-44C0-867C-27B3E06773CC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{52943C11-7C8A-44C0-867C-27B3E06773CC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{52943C11-7C8A-44C0-867C-27B3E06773CC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{52943C11-7C8A-44C0-867C-27B3E06773CC}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

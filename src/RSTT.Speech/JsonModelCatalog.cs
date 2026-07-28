@@ -53,16 +53,23 @@ public sealed class JsonModelCatalog : IModelCatalog
                 errors.Add("a model has no ID or display name");
             }
 
-            if (model.IntegrationStatus != ModelIntegrationStatus.Available)
+            if (model.IntegrationStatus is not (
+                    ModelIntegrationStatus.Available or
+                    ModelIntegrationStatus.Preview))
             {
                 continue;
             }
 
             if (string.IsNullOrWhiteSpace(model.DirectoryName) ||
                 model.Artifacts.Count == 0 ||
-                model.Engine is not ("online-transducer" or "online-zipformer2-ctc" or "online-nemo-ctc"))
+                model.Engine is not (
+                    "online-transducer" or
+                    "online-zipformer2-ctc" or
+                    "online-nemo-ctc" or
+                    "offline-qwen3-asr" or
+                    "whisper-cpp"))
             {
-                errors.Add($"{model.Id} has an incomplete available integration");
+                errors.Add($"{model.Id} has an incomplete actionable integration");
             }
 
             foreach (var artifact in model.Artifacts)

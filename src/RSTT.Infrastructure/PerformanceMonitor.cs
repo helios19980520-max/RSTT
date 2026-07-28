@@ -19,6 +19,11 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
     private long _recognitionResults;
     private long _uiUpdates;
     private long _injections;
+    private long _injectionAttempts;
+    private long _injectionUtf16Units;
+    private long _sendInputCalls;
+    private long _injectionFailures;
+    private int _injectionQueueHighWatermark;
     private long _coalescedUiEvents;
     private long _droppedAudioMilliseconds;
     private int _audioQueueDepth;
@@ -95,6 +100,35 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
 
     public void RecordInjection() => Interlocked.Increment(ref _injections);
 
+    public void RecordInjectionAttempt(
+        int utf16Length,
+        int sendInputCallCount,
+        int queueDepth,
+        bool succeeded)
+    {
+        Interlocked.Increment(ref _injectionAttempts);
+        Interlocked.Add(ref _injectionUtf16Units, Math.Max(0, utf16Length));
+        Interlocked.Add(ref _sendInputCalls, Math.Max(0, sendInputCallCount));
+        if (!succeeded)
+        {
+            Interlocked.Increment(ref _injectionFailures);
+        }
+
+        var boundedDepth = Math.Max(0, queueDepth);
+        while (true)
+        {
+            var current = Volatile.Read(ref _injectionQueueHighWatermark);
+            if (boundedDepth <= current ||
+                Interlocked.CompareExchange(
+                    ref _injectionQueueHighWatermark,
+                    boundedDepth,
+                    current) == current)
+            {
+                break;
+            }
+        }
+    }
+
     public PerformanceSnapshot GetSnapshot()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -113,6 +147,9 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
         var results = Interlocked.Exchange(ref _recognitionResults, 0);
         var uiUpdates = Interlocked.Exchange(ref _uiUpdates, 0);
         var injections = Interlocked.Exchange(ref _injections, 0);
+        var injectionAttempts = Interlocked.Exchange(ref _injectionAttempts, 0);
+        var injectionUtf16Units = Interlocked.Exchange(ref _injectionUtf16Units, 0);
+        var sendInputCalls = Interlocked.Exchange(ref _sendInputCalls, 0);
 
         double p50;
         double p95;
@@ -162,6 +199,12 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
             results / elapsedSeconds,
             uiUpdates / elapsedSeconds,
             injections / elapsedSeconds,
+            injectionAttempts == 0
+                ? 0
+                : injectionUtf16Units / (double)injectionAttempts,
+            sendInputCalls / elapsedSeconds,
+            Volatile.Read(ref _injectionQueueHighWatermark),
+            Interlocked.Read(ref _injectionFailures),
             Interlocked.Read(ref _coalescedUiEvents),
             Volatile.Read(ref _provider),
             Volatile.Read(ref _modelId),

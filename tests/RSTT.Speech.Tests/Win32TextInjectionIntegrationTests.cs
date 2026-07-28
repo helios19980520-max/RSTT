@@ -9,6 +9,7 @@ using Xunit;
 
 namespace RSTT.Speech.Tests;
 
+[Collection(NativeInputTestGroup.Name)]
 public sealed class Win32TextInjectionIntegrationTests
 {
     private static readonly string[] ExactCorpus =
@@ -90,6 +91,29 @@ public sealed class Win32TextInjectionIntegrationTests
             await host.WaitForExactTextAsync(expected, TimeSpan.FromSeconds(5)));
     }
 
+    [Fact]
+    [Trait("Category", "WindowsIntegration")]
+    public async Task NativeMessageTraceContainsOneMarkedDownUpPairPerUtf16Unit()
+    {
+        const string expected = "Marked Unicode 🙂";
+        await using var host = await NativeEditControlHost.StartAsync(recordEvents: true);
+        using var service = new Win32TextInjectionService(
+            NullLogger<Win32TextInjectionService>.Instance);
+
+        var result = await service.InjectAsync(Request(expected, 1));
+
+        Assert.Equal(TextInjectionStatus.Success, result.Status);
+        Assert.Equal(
+            expected,
+            await host.WaitForExactTextAsync(expected, TimeSpan.FromSeconds(5)));
+        var events = await host.WaitForMarkedEventsAsync(
+            expected.Length * 2,
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(expected.Length, events.Count(item => item.Message == 0x0100));
+        Assert.Equal(expected.Length, events.Count(item => item.Message == 0x0101));
+        Assert.All(events, item => Assert.Equal(1, item.RepeatCount));
+    }
+
     private static InjectionRequest Request(string text, long commitId) =>
         new(
             new SessionGenerationId(1),
@@ -102,16 +126,22 @@ public sealed class Win32TextInjectionIntegrationTests
     {
         private readonly string _directory;
         private readonly string _outputPath;
+        private readonly string _eventsPath;
         private readonly Process _process;
 
-        private NativeEditControlHost(string directory, string outputPath, Process process)
+        private NativeEditControlHost(
+            string directory,
+            string outputPath,
+            string eventsPath,
+            Process process)
         {
             _directory = directory;
             _outputPath = outputPath;
+            _eventsPath = eventsPath;
             _process = process;
         }
 
-        public static async Task<NativeEditControlHost> StartAsync()
+        public static async Task<NativeEditControlHost> StartAsync(bool recordEvents = false)
         {
             var directory = Path.Combine(
                 Path.GetTempPath(),
@@ -119,6 +149,7 @@ public sealed class Win32TextInjectionIntegrationTests
             Directory.CreateDirectory(directory);
             var readyPath = Path.Combine(directory, "ready.txt");
             var outputPath = Path.Combine(directory, "output.txt");
+            var eventsPath = Path.Combine(directory, "events.txt");
             var executable = LocateTestHostExecutable();
             var startInfo = new ProcessStartInfo(executable)
             {
@@ -126,9 +157,17 @@ public sealed class Win32TextInjectionIntegrationTests
             };
             startInfo.ArgumentList.Add(readyPath);
             startInfo.ArgumentList.Add(outputPath);
+            if (recordEvents)
+            {
+                startInfo.ArgumentList.Add(eventsPath);
+            }
             var process = Process.Start(startInfo) ??
                 throw new InvalidOperationException("The native edit-control host did not start.");
-            var host = new NativeEditControlHost(directory, outputPath, process);
+            var host = new NativeEditControlHost(
+                directory,
+                outputPath,
+                eventsPath,
+                process);
             try
             {
                 var handles = await WaitForReadyAsync(
@@ -149,6 +188,40 @@ public sealed class Win32TextInjectionIntegrationTests
                 await host.DisposeAsync();
                 throw;
             }
+        }
+
+        public async Task<IReadOnlyList<RecordedInputEvent>> WaitForMarkedEventsAsync(
+            int expectedCount,
+            TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            var events = Array.Empty<RecordedInputEvent>();
+            while (DateTime.UtcNow < deadline)
+            {
+                if (File.Exists(_eventsPath))
+                {
+                    try
+                    {
+                        events = (await File.ReadAllLinesAsync(_eventsPath))
+                            .Select(ParseEvent)
+                            .Where(item =>
+                                item.ExtraInfo == Win32TextInjectionService.InputMarker &&
+                                item.Message is 0x0100 or 0x0101)
+                            .ToArray();
+                        if (events.Length >= expectedCount)
+                        {
+                            return events;
+                        }
+                    }
+                    catch (IOException)
+                    {
+                    }
+                }
+
+                await Task.Delay(20);
+            }
+
+            return events;
         }
 
         public async Task<string> WaitForExactTextAsync(string expected, TimeSpan timeout)
@@ -232,6 +305,20 @@ public sealed class Win32TextInjectionIntegrationTests
                 : throw new FileNotFoundException(
                     "Build the dedicated input test host before running integration tests.",
                     executable);
+        }
+
+        private static RecordedInputEvent ParseEvent(string line)
+        {
+            var fields = line.Split(';');
+            if (fields.Length != 5)
+            {
+                throw new FormatException("The native input event record is malformed.");
+            }
+
+            return new RecordedInputEvent(
+                int.Parse(fields[1], CultureInfo.InvariantCulture),
+                int.Parse(fields[3], CultureInfo.InvariantCulture),
+                (nint)long.Parse(fields[4], CultureInfo.InvariantCulture));
         }
 
         private static async Task<(nint Window, nint Editor)> WaitForReadyAsync(
@@ -386,5 +473,10 @@ public sealed class Win32TextInjectionIntegrationTests
             public int Right;
             public int Bottom;
         }
+
+        public sealed record RecordedInputEvent(
+            int Message,
+            int RepeatCount,
+            nint ExtraInfo);
     }
 }

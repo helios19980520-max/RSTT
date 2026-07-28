@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Models;
+using RSTT.Core.Settings;
 using RSTT.Input;
 using Xunit;
 
@@ -192,13 +193,58 @@ public sealed class Win32TextInjectionServiceTests
         Assert.Equal("accepted-current", native.TypedText);
     }
 
+    [Fact]
+    public async Task AutomaticUsesCompatibilityProfileForPackagedModernNotepad()
+    {
+        var native = new FakeWin32InputApi
+        {
+            ProcessImagePath =
+                @"C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_11.2604.5.0_x64__8wekyb3d8bbwe\Notepad\Notepad.exe",
+        };
+        using var service = CreateService(
+            native,
+            mode: TextInjectionDeliveryMode.Automatic);
+
+        var result = await service.InjectAsync(Request(new string('x', 17)));
+
+        Assert.Equal(TextInjectionStatus.Success, result.Status);
+        Assert.Equal("Compatibility", result.DeliveryProfile);
+        Assert.Equal(1, result.Utf16UnitsPerBlock);
+        Assert.Equal(17, result.SendInputCallCount);
+        Assert.Equal(17, native.OfferedInputCounts.Count);
+        Assert.All(native.OfferedInputCounts, count => Assert.Equal(2, count));
+    }
+
+    [Fact]
+    public async Task ExplicitDirectOverridesNotepadCompatibilityProfile()
+    {
+        var native = new FakeWin32InputApi
+        {
+            ProcessImagePath =
+                @"C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_11.2604.5.0_x64__8wekyb3d8bbwe\Notepad\Notepad.exe",
+        };
+        using var service = CreateService(
+            native,
+            mode: TextInjectionDeliveryMode.Direct);
+
+        var result = await service.InjectAsync(Request(new string('x', 17)));
+
+        Assert.Equal(TextInjectionStatus.Success, result.Status);
+        Assert.Equal("Direct", result.DeliveryProfile);
+        Assert.Equal(64, result.Utf16UnitsPerBlock);
+        Assert.Equal(1, result.SendInputCallCount);
+        Assert.Equal([34], native.OfferedInputCounts);
+    }
+
     private static Win32TextInjectionService CreateService(
         FakeWin32InputApi native,
-        uint currentProcessId = 99) =>
+        uint currentProcessId = 99,
+        TextInjectionDeliveryMode mode = TextInjectionDeliveryMode.Automatic) =>
         new(
             NullLogger<Win32TextInjectionService>.Instance,
             native,
-            currentProcessId);
+            currentProcessId,
+            () => mode);
 
     private static InjectionRequest Request(
         string text,
@@ -234,6 +280,8 @@ public sealed class Win32TextInjectionServiceTests
         public bool BlockSends { get; init; }
 
         public int LastError { get; init; }
+
+        public string? ProcessImagePath { get; init; }
 
         public int SendCallCount { get; private set; }
 
@@ -291,5 +339,8 @@ public sealed class Win32TextInjectionServiceTests
         public int GetLastError() => LastError;
 
         public bool IsTargetElevated(uint targetProcessId) => TargetElevated;
+
+        public string? TryGetProcessImagePath(uint targetProcessId) =>
+            ProcessImagePath;
     }
 }

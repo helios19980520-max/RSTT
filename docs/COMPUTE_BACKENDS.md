@@ -62,7 +62,11 @@ command-line tooling is supplemental evidence only.
 10. active-session inference.
 
 The Settings diagnostics self-test includes those layers, ASR, audio, and
-performance data. “Copy Diagnostics” excludes transcript content.
+performance data. It exposes cards for the VC++ runtime, physical GPU, driver,
+CUDA runtime, cuDNN, sherpa worker, whisper.cpp worker, provider, recognizer,
+warmup, and active inference. Detected and required versions, paths, fallback
+reasons, the RSTT Accelerator Pack action, and official NVIDIA/CUDA/cuDNN/VC++
+links are shown independently. “Copy Diagnostics” excludes transcript content.
 
 File presence is only dependency evidence. `CUDA Active` is not shown until an
 actual decode has occurred with provider `cuda`.
@@ -81,12 +85,18 @@ Keep CPU and GPU runtime packages separable:
 - model downloads are not duplicated;
 - only one complete recognizer is active at a time.
 
-The base CPU package is implemented and verified. The versioned named-pipe
-worker and CUDA Accelerator Pack are not yet shipped in this repository because
-the matching CUDA 12.x/cuDNN 9.x/provider bundle and redistribution review are
-not complete. Consequently Auto and explicit CUDA safely select CPU with a
-layer-specific reason on the current machine; this document does not claim CUDA
-inference.
+The base package now includes a versioned `whisper-cpu/1.9.1` worker. The
+optional `whisper-cuda12/1.9.1` worker project uses the same versioned,
+length-prefixed named-pipe protocol. The protocol has typed handshake, load,
+warmup, start, float32 audio, finish, unload, shutdown, ping, readiness,
+hypothesis, performance, and structured-fault messages. Auto fully terminates a
+failed Whisper CUDA worker before starting CPU.
+
+Sherpa CPU execution has not yet moved out of process, and the reviewed
+sherpa CUDA 12/cuDNN 9 provider bundle is not present. The repository therefore
+does not publish or advertise a complete Accelerator Pack and does not claim
+CUDA inference. Auto and explicit CUDA retain layer-specific failure evidence
+on this machine.
 
 References:
 

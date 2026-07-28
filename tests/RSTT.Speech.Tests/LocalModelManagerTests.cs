@@ -78,7 +78,7 @@ public sealed class LocalModelManagerTests
             var models = manager.GetAvailableModels();
             var model = Assert.Single(models, candidate => candidate.IsRecommended);
 
-            Assert.Equal(8, models.Count);
+            Assert.Equal(10, models.Count);
             Assert.Equal(LocalModelManager.DefaultModelId, model.Id);
             Assert.True(model.IsRecommended);
             Assert.True(model.DownloadSizeBytes > 600_000_000);
@@ -95,10 +95,15 @@ public sealed class LocalModelManagerTests
                     candidate.Descriptor?.IntegrationStatus ==
                     ModelIntegrationStatus.ComingLater));
             Assert.Equal(
-                4,
+                3,
                 models.Count(candidate =>
                     candidate.Descriptor?.IntegrationStatus ==
                     ModelIntegrationStatus.Experimental));
+            Assert.Equal(
+                3,
+                models.Count(candidate =>
+                    candidate.Descriptor?.IntegrationStatus ==
+                    ModelIntegrationStatus.Preview));
         }
         finally
         {
