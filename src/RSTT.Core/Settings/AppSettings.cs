@@ -14,6 +14,14 @@ public sealed class AppSettings
 
     public ComputeBackend ComputeBackend { get; set; } = ComputeBackend.Auto;
 
+    public string DefaultModelId { get; set; } = "NemotronStreamingEn06BInt8_560ms_20260425";
+
+    public string DefaultProfileId { get; set; } = "balanced-560";
+
+    public string DefaultLanguage { get; set; } = "en";
+
+    public ComputeBackend DefaultBackend { get; set; } = ComputeBackend.Auto;
+
     public RecognitionMode RecognitionMode { get; set; } = RecognitionMode.Balanced;
 
     public int CpuThreadLimit { get; set; }

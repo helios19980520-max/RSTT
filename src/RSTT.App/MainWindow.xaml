@@ -261,8 +261,16 @@
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <StackPanel VerticalAlignment="Center">
-                                            <TextBlock Text="Ready when you are" FontSize="19" FontWeight="SemiBold" />
-                                            <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedBody}" Margin="0,5,0,0" />
+                                            <TextBlock Text="{Binding LiveHeadline}" FontSize="19" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding LiveDescription}" Style="{StaticResource MutedBody}" Margin="0,5,0,0" />
+                                            <WrapPanel Margin="0,10,0,0">
+                                                <TextBlock Text="{Binding ActiveRuntimeLabel}" Foreground="{StaticResource Cyan}" FontSize="11" Margin="0,0,14,0" />
+                                                <TextBlock Foreground="{StaticResource MutedText}" FontSize="11" Margin="0,0,14,0">
+                                                    <Run Text="Language: " />
+                                                    <Run Text="{Binding ActiveLanguageLabel, Mode=OneWay}" />
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding TargetApplicationLabel}" Foreground="{StaticResource MutedText}" FontSize="11" />
+                                            </WrapPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                                                 <Border Background="#152D40" CornerRadius="7" Padding="9,5">
                                                     <TextBlock Text="{Binding ToggleListeningHotkey}" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
@@ -388,6 +396,7 @@
 
                     <!-- Models -->
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
                                   Visibility="{Binding SelectedPageIndex, Converter={StaticResource IndexToVisibility}, ConverterParameter=2}">
                             <StackPanel Margin="34,28,34,32">
                                 <Grid>
@@ -423,31 +432,48 @@
                                     </Grid>
                                 </Border>
 
-                                <ListBox ItemsSource="{Binding Models}"
+                                <Grid Margin="0,16,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="14" />
+                                        <ColumnDefinition Width="210" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Text="{Binding ModelSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="Search models"
+                                             ToolTip="Search model name, family, or language" />
+                                    <ComboBox Grid.Column="2"
+                                              ItemsSource="{Binding ModelFilters}"
+                                              SelectedItem="{Binding SelectedModelFilter}"
+                                              AutomationProperties.Name="Filter models" />
+                                </Grid>
+
+                                <ListBox ItemsSource="{Binding ModelsView}"
                                          SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
-                                         Margin="0,16,0,0"
-                                         Height="152"
+                                         Margin="0,12,0,0"
+                                         Height="306"
                                          Background="Transparent"
                                          BorderThickness="0"
-                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                         ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                         ScrollViewer.CanContentScroll="True"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         VirtualizingPanel.IsVirtualizing="True"
+                                         VirtualizingPanel.VirtualizationMode="Recycling">
                                     <ListBox.ItemsPanel>
                                         <ItemsPanelTemplate>
-                                            <StackPanel Orientation="Horizontal" />
+                                            <VirtualizingStackPanel Orientation="Vertical" />
                                         </ItemsPanelTemplate>
                                     </ListBox.ItemsPanel>
                                     <ListBox.ItemContainerStyle>
                                         <Style TargetType="ListBoxItem">
-                                            <Setter Property="Margin" Value="0,0,12,0" />
+                                            <Setter Property="Margin" Value="0,0,0,8" />
                                             <Setter Property="Padding" Value="0" />
-                                            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                             <Setter Property="Template">
                                                 <Setter.Value>
                                                     <ControlTemplate TargetType="ListBoxItem">
                                                         <Border x:Name="ModelCard"
-                                                                Width="260"
-                                                                Height="132"
-                                                                Padding="16"
+                                                                Height="92"
+                                                                Padding="16,12"
                                                                 Background="{StaticResource PanelBackground}"
                                                                 BorderBrush="{StaticResource BorderBrush}"
                                                                 BorderThickness="1"
@@ -480,7 +506,7 @@
                                                     <TextBlock Text="{Binding DisplayName}"
                                                                FontWeight="SemiBold"
                                                                FontSize="14"
-                                                               MaxWidth="190"
+                                                               MaxWidth="560"
                                                                TextTrimming="CharacterEllipsis" />
                                                     <Ellipse Width="7"
                                                              Height="7"
@@ -494,8 +520,8 @@
                                                            Style="{StaticResource MutedBody}"
                                                            FontSize="11"
                                                            LineHeight="16"
-                                                           Margin="0,8,0,8"
-                                                           MaxHeight="34"
+                                                           Margin="0,6,90,5"
+                                                           MaxHeight="32"
                                                            TextTrimming="CharacterEllipsis" />
                                                 <Grid Grid.Row="2">
                                                     <TextBlock Text="{Binding IntegrationStatusText}"
@@ -621,7 +647,22 @@
                                                         AutomationProperties.Name="Use selected model"
                                                         Margin="0"
                                                         Visibility="{Binding CanUseSelectedModel, Converter={StaticResource BoolToVisibility}}"
-                                                        Content="Use model" />
+                                                        Content="Use now" />
+                                                <Button Style="{StaticResource SecondaryButton}"
+                                                        Command="{Binding SetDefaultModelCommand}"
+                                                        AutomationProperties.Name="Set selected model as default"
+                                                        Margin="10,0,0,0"
+                                                        Visibility="{Binding CanSetSelectedModelDefault, Converter={StaticResource BoolToVisibility}}"
+                                                        Content="Set default" />
+                                                <Border Background="#173A37"
+                                                        BorderBrush="#286D64"
+                                                        BorderThickness="1"
+                                                        CornerRadius="8"
+                                                        Padding="10,6"
+                                                        Margin="10,0,0,0"
+                                                        Visibility="{Binding IsSelectedModelDefault, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="DEFAULT" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" />
+                                                </Border>
                                                 <Button Command="{Binding CancelDownloadCommand}"
                                                         AutomationProperties.Name="Pause model download"
                                                         Margin="0">
@@ -896,6 +937,42 @@
                                                            Margin="2,4,0,0" />
                                             </StackPanel>
                                         </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                                    <StackPanel>
+                                        <Grid>
+                                            <StackPanel>
+                                                <TextBlock Text="Diagnostics" Style="{StaticResource SectionTitle}" />
+                                                <TextBlock Text="System · Graphics · CUDA · ASR · Audio · Performance"
+                                                           Style="{StaticResource MutedBody}"
+                                                           FontSize="11"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                <Button Style="{StaticResource SecondaryButton}"
+                                                        Command="{Binding RunDiagnosticsCommand}"
+                                                        AutomationProperties.Name="Run diagnostics self-test"
+                                                        Content="Run self-test" />
+                                                <Button Style="{StaticResource SecondaryButton}"
+                                                        Command="{Binding CopyDiagnosticsCommand}"
+                                                        AutomationProperties.Name="Copy diagnostics without transcript content"
+                                                        Margin="10,0,0,0"
+                                                        Content="Copy diagnostics" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBox Text="{Binding DiagnosticsText, Mode=OneWay}"
+                                                 IsReadOnly="True"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="NoWrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 HorizontalScrollBarVisibility="Auto"
+                                                 FontFamily="Cascadia Mono, Consolas"
+                                                 FontSize="11"
+                                                 MinHeight="180"
+                                                 Margin="0,16,0,0"
+                                                 AutomationProperties.Name="Diagnostics output" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

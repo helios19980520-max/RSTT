@@ -7,13 +7,13 @@ using SherpaOnnx;
 namespace RSTT.Speech;
 
 /// <summary>Local, online sherpa-onnx recognition. All native objects remain owned here.</summary>
-public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecognitionEngine
+public sealed partial class SherpaOnlineEngine : ISpeechRecognitionEngine
 {
     private readonly IModelManager _modelManager;
     private readonly ISettingsService _settings;
     private readonly IComputeDeviceService _computeDevices;
     private readonly IPerformanceMonitor _performance;
-    private readonly ILogger<SherpaOnnxSpeechRecognitionEngine> _logger;
+    private readonly ILogger<SherpaOnlineEngine> _logger;
     private readonly SemaphoreSlim _engineLock = new(1, 1);
     private OnlineRecognizer? _recognizer;
     private OnlineStream? _stream;
@@ -22,16 +22,19 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
     private double _audioSinceDecodeMilliseconds;
     private string _lastPublishedText = string.Empty;
     private string _recognitionLanguage = "en";
+    private string _selectedProvider = "cpu";
+    private SessionGenerationId _sessionGenerationId;
+    private bool _cudaDecodeConfirmed;
     private bool _streamHasAudio;
     private bool _isStarted;
     private bool _disposed;
 
-    public SherpaOnnxSpeechRecognitionEngine(
+    public SherpaOnlineEngine(
         IModelManager modelManager,
         ISettingsService settings,
         IComputeDeviceService computeDevices,
         IPerformanceMonitor performance,
-        ILogger<SherpaOnnxSpeechRecognitionEngine> logger)
+        ILogger<SherpaOnlineEngine> logger)
     {
         _modelManager = modelManager;
         _settings = settings;
@@ -45,7 +48,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
 
     public ModelInformation ModelInformation { get; private set; }
 
-    public event EventHandler<RecognitionResult>? RecognitionResultAvailable;
+    public event EventHandler<RecognitionHypothesis>? RecognitionResultAvailable;
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -126,11 +129,12 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
             return;
         }
 
-        RecognitionResult? publishedResult = null;
+        RecognitionHypothesis? publishedResult = null;
         await _engineLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             _lastSequenceNumber = chunk.SequenceNumber;
+            _sessionGenerationId = chunk.SessionGenerationId;
             if (_voiceActivityDetector is not null)
             {
                 _voiceActivityDetector.AcceptWaveform(chunk.Samples);
@@ -155,25 +159,48 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
                     decodeStopwatch.Elapsed,
                     _audioSinceDecodeMilliseconds);
                 _audioSinceDecodeMilliseconds = 0;
+                if (!_cudaDecodeConfirmed &&
+                    _selectedProvider.Equals("cuda", StringComparison.OrdinalIgnoreCase))
+                {
+                    _cudaDecodeConfirmed = true;
+                    _performance.SetSessionContext(
+                        "cuda",
+                        ModelInformation.Id,
+                        string.Empty);
+                    LogCudaDecodeConfirmed(_logger, ModelInformation.Id);
+                }
             }
 
+            var facade = new SherpaOnlineRecognizerFacade(_recognizer, _stream);
             var result = _recognizer.GetResult(_stream);
             var isFinal = _recognizer.IsEndpoint(_stream);
-            if (!string.IsNullOrWhiteSpace(result.Text) &&
-                (isFinal || !string.Equals(result.Text, _lastPublishedText, StringComparison.Ordinal)))
+            if (!isFinal &&
+                !string.IsNullOrWhiteSpace(result.Text) &&
+                !string.Equals(result.Text, _lastPublishedText, StringComparison.Ordinal))
             {
                 _lastPublishedText = result.Text;
-                publishedResult = new RecognitionResult(
+                publishedResult = new RecognitionHypothesis(
+                    chunk.SessionGenerationId,
+                    chunk.SequenceNumber,
                     result.Text,
                     isFinal,
-                    chunk.SequenceNumber,
                     DateTimeOffset.UtcNow,
-                    Language: _recognitionLanguage);
+                    _recognitionLanguage,
+                    ModelInformation.Id);
             }
 
             if (isFinal)
             {
-                _recognizer.Reset(_stream);
+                OnlineRecognitionLifecycle.EmitEndpointThenReset(
+                    facade,
+                    text => Publish(new RecognitionHypothesis(
+                        chunk.SessionGenerationId,
+                        chunk.SequenceNumber,
+                        text,
+                        true,
+                        DateTimeOffset.UtcNow,
+                        _recognitionLanguage,
+                        ModelInformation.Id)));
                 _streamHasAudio = false;
                 _lastPublishedText = string.Empty;
             }
@@ -185,8 +212,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
 
         if (publishedResult is not null)
         {
-            _performance.RecordRecognitionResult();
-            RecognitionResultAvailable?.Invoke(this, publishedResult);
+            Publish(publishedResult);
         }
     }
 
@@ -298,9 +324,14 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
             CpuSupported = true,
         };
         var compute = await _computeDevices
-            .SelectAsync(_settings.Current.ComputeBackend, descriptor, cancellationToken)
+            .SelectAsync(_settings.Current.DefaultBackend, descriptor, cancellationToken)
             .ConfigureAwait(false);
-        var profile = SelectProfile(descriptor.LatencyProfiles, _settings.Current.RecognitionMode)
+        var profile = descriptor.LatencyProfiles.FirstOrDefault(candidate =>
+                string.Equals(
+                    candidate.Id,
+                    _settings.Current.DefaultProfileId,
+                    StringComparison.OrdinalIgnoreCase))
+            ?? SelectProfile(descriptor.LatencyProfiles, _settings.Current.RecognitionMode)
             ?? installation.RecognitionProfile;
         var provider = compute.Selected == ComputeBackend.Cuda ? "cuda" : "cpu";
         var threads = ResolveThreadCount(installation, profile, provider);
@@ -318,7 +349,7 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
                 try
                 {
                     var stream = recognizer.CreateStream();
-                    ConfigureStreamLanguage(stream, descriptor, _settings.Current.Language);
+                    ConfigureStreamLanguage(stream, descriptor, _settings.Current.DefaultLanguage);
                     var vad = CreateVoiceActivityDetector(installation);
                     return new EngineResources(recognizer, stream, vad);
                 }
@@ -337,9 +368,16 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         _lastSequenceNumber = 0;
         _audioSinceDecodeMilliseconds = 0;
         _lastPublishedText = string.Empty;
-        _recognitionLanguage = ResolveLanguage(descriptor, _settings.Current.Language);
+        _recognitionLanguage = ResolveLanguage(descriptor, _settings.Current.DefaultLanguage);
+        _selectedProvider = provider;
+        _cudaDecodeConfirmed = false;
         ModelInformation = installation.Information;
-        _performance.SetSessionContext(provider, installation.Information.Id, string.Empty);
+        _performance.SetSessionContext(
+            provider.Equals("cuda", StringComparison.OrdinalIgnoreCase)
+                ? "cuda-ready"
+                : "cpu",
+            installation.Information.Id,
+            string.Empty);
         LogModelLoaded(
             _logger,
             installation.Information.Id,
@@ -359,31 +397,25 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
 
         if (_streamHasAudio)
         {
-            _stream.InputFinished();
+            var facade = new SherpaOnlineRecognizerFacade(_recognizer, _stream);
             var decodeStopwatch = Stopwatch.StartNew();
-            while (_recognizer.IsReady(_stream))
-            {
-                _recognizer.Decode(_stream);
-            }
+            OnlineRecognitionLifecycle.FinishInputAndEmit(
+                facade,
+                text => Publish(
+                    new RecognitionHypothesis(
+                        _sessionGenerationId,
+                        _lastSequenceNumber,
+                        text,
+                        true,
+                        DateTimeOffset.UtcNow,
+                        _recognitionLanguage,
+                        ModelInformation.Id)));
             decodeStopwatch.Stop();
             _performance.RecordDecode(
                 decodeStopwatch.Elapsed,
                 _audioSinceDecodeMilliseconds);
             _audioSinceDecodeMilliseconds = 0;
 
-            var result = _recognizer.GetResult(_stream);
-            if (!string.IsNullOrWhiteSpace(result.Text))
-            {
-                _performance.RecordRecognitionResult();
-                RecognitionResultAvailable?.Invoke(
-                    this,
-                    new RecognitionResult(
-                        result.Text,
-                        true,
-                        _lastSequenceNumber,
-                        DateTimeOffset.UtcNow,
-                        Language: _recognitionLanguage));
-            }
         }
 
         // InputFinished is terminal for an OnlineStream. Dispose it and create a new
@@ -392,11 +424,19 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         _stream = _recognizer.CreateStream();
         if (ModelInformation.Descriptor is { } descriptor)
         {
-            ConfigureStreamLanguage(_stream, descriptor, _settings.Current.Language);
+            ConfigureStreamLanguage(_stream, descriptor, _settings.Current.DefaultLanguage);
         }
         _streamHasAudio = false;
         _lastPublishedText = string.Empty;
+        _selectedProvider = "cpu";
+        _cudaDecodeConfirmed = false;
         _voiceActivityDetector?.Reset();
+    }
+
+    private void Publish(RecognitionHypothesis hypothesis)
+    {
+        _performance.RecordRecognitionResult();
+        RecognitionResultAvailable?.Invoke(this, hypothesis);
     }
 
     private void DisposeNativeUnsafe()
@@ -534,6 +574,30 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         OnlineStream Stream,
         VoiceActivityDetector? VoiceActivityDetector);
 
+    private sealed class SherpaOnlineRecognizerFacade : IOnlineRecognizerFacade
+    {
+        private readonly OnlineRecognizer _recognizer;
+        private readonly OnlineStream _stream;
+
+        public SherpaOnlineRecognizerFacade(
+            OnlineRecognizer recognizer,
+            OnlineStream stream)
+        {
+            _recognizer = recognizer;
+            _stream = stream;
+        }
+
+        public void InputFinished() => _stream.InputFinished();
+
+        public bool IsReady() => _recognizer.IsReady(_stream);
+
+        public void Decode() => _recognizer.Decode(_stream);
+
+        public string GetResultText() => _recognizer.GetResult(_stream).Text;
+
+        public void Reset() => _recognizer.Reset(_stream);
+    }
+
     [LoggerMessage(
         LogLevel.Information,
         "Loaded local sherpa-onnx model {ModelId} using {Engine}, provider {Provider}, {ThreadCount} thread(s), profile {Profile}. Compute selection: {ComputeReason}")]
@@ -545,6 +609,11 @@ public sealed partial class SherpaOnnxSpeechRecognitionEngine : ISpeechRecogniti
         int threadCount,
         string profile,
         string computeReason);
+
+    [LoggerMessage(
+        LogLevel.Information,
+        "CUDA Active: model {ModelId} completed a successful CUDA decode.")]
+    private static partial void LogCudaDecodeConfirmed(ILogger logger, string modelId);
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 }

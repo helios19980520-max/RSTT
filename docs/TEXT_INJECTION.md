@@ -1,54 +1,79 @@
 # Text injection
 
-RSTT sends finalized transcript text to the current foreground application with Windows `SendInput`. It does not use the clipboard, paste commands, or keyboard-layout-dependent character mappings.
+RSTT sends only `TranscriptCommit` values to Windows text targets. Caption
+properties and raw recognition hypotheses never enter the injection path.
 
-## Production commit policy
+## Exact-text invariant
 
-Live ASR partials can revise words as context arrives. Caption updates are therefore responsive, but irreversible typing uses `FinalOnlyCommitPolicy`: only an endpoint-final segment enters the injection channel.
+The irreversible boundary is:
 
-This is intentionally more conservative than stable-prefix typing. It avoids committing plausible-looking partial fragments that the model later rewrites. A future model may opt into another `ITranscriptCommitPolicy` only after model-specific validation.
+```text
+RecognitionHypothesis
+  -> ITranscriptCommitPolicy
+  -> TranscriptCommit
+  -> InjectionRequest
+  -> one Win32TextInjectionService worker
+  -> paired Unicode INPUT records
+  -> SendInput
+```
 
-Turning typing on does not replay caption history. Turning it off immediately prevents future enqueueing, and queued requests recheck the setting/listening generation before delivery.
+`TranscriptCommit.Text` is assigned directly to `InjectionRequest.Text`. Session,
+commit, and source-sequence IDs are retained. Boundary diagnostics record the
+UTF-16 length and a truncated SHA-256 value; normal logs never record transcript
+content.
 
-## Delivery contract
+## Commit policy
 
-For each segment RSTT:
+- Native and buffered online engines use `StablePrefixCommitPolicy`: whole-word
+  boundaries, two consecutive confirmations, a two-word holdback, duplicate
+  suppression, and an unconditional final-tail flush.
+- Offline/VAD engines use `FinalOnlyCommitPolicy`.
+- A session generation ID is present on audio, hypotheses, commits, captions,
+  and injection requests. Late work from an old generation is rejected.
 
-1. resolves the current foreground window and process immediately before sending;
-2. rejects a missing target and RSTT's own process;
-3. submits UTF-16 `KEYEVENTF_UNICODE` down/up pairs in batches;
-4. rechecks the target every 16 UTF-16 code units;
-5. serializes segments through one bounded worker; and
-6. pauses 2 ms between batches so target controls can process messages.
+## Win32 delivery
 
-If focus changes during a segment, delivery stops instead of continuing into the new application. An already delivered prefix cannot be recalled. Future complete segments resolve the new foreground target, so switching from Notepad to Word routes later text to Word.
+`Win32TextInjectionService` owns a bounded 64-item channel and one consumer.
+Every accepted request retains the exact foreground HWND and process ID captured
+at enqueue time.
 
-The x64 `INPUT` structure is explicitly laid out to match the Windows ABI.
+For each UTF-16 code unit, including both halves of a surrogate pair, the
+service creates a `KEYEVENTF_UNICODE` key-down record and a matching Unicode
+key-up record. It submits up to 64 UTF-16 units in a block with no normal delay.
+The exact HWND is checked before and after every block.
 
-## Isolation from capture
+The service tracks `SendInput`'s accepted record count:
 
-Text injection never runs on the WASAPI callback, audio conversion worker, recognition call, or WPF dispatcher. A slow target cannot block capture or decoding. The bounded injection queue preserves order while preventing unbounded memory growth.
+- accepted records are never replayed;
+- an even partial advances only complete UTF-16 units;
+- an odd partial sends only the missing cleanup key-up, then advances that unit;
+- at most three positive-progress continuations are permitted;
+- a zero send or exhausted continuation budget aborts the remainder;
+- a foreground HWND change returns `TargetChanged` and never redirects the tail.
 
-Repeated self-focus or target warnings are rate-limited and status-deduplicated. Self-focus is Debug-level because opening RSTT during recognition is normal.
+Results include status, expected/sent record counts, committed UTF-16 offset,
+target HWND/PID, Win32 error, and a diagnostic. Elevated-target status comes
+from integrity-level comparison because `SendInput` alone cannot identify UIPI.
+No clipboard fallback is used.
 
-## Caption focus behavior
+Self-focused requests are rejected before enqueueing. Text recognized while
+RSTT is focused therefore cannot form a backlog that types after focus leaves.
 
-The overlay uses `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `ShowActivated=false`, and a no-activation window style. Caption show/update operations do not call `Activate()`.
+## Verification
 
-## Windows integrity levels
+`tests/RSTT.Input.TestHost` is a dedicated WinForms process containing a native
+edit control. Integration tests focus that control, inject text, and assert
+exact equality for Latin text, punctuation, Japanese, Korean, accented Latin,
+emoji/surrogate pairs, long text, consecutive commits, and 100 repetitions of
+the required sentence. Tests contain no Notepad-owner check and no skip path.
 
-Windows User Interface Privilege Isolation can block a normal application from sending input to an elevated Administrator window. RSTT intentionally:
+The deterministic Win32-adapter suite covers complete, zero, even-partial,
+odd-partial, continuation exhaustion, target change, self-focus, elevated
+target, ordering, bounded-queue, and cancelled prior-generation behavior.
 
-- does not request Administrator privileges;
-- does not use `uiAccess`;
-- does not inject code into other processes; and
-- does not bypass UIPI.
+## Windows limitations
 
-Run both applications at the same integrity level when typed output is required. Captions continue when injection is unavailable.
-
-## Other limitations
-
-- The target must accept Unicode keyboard packets in an editable control.
-- Secure desktop, credential prompts, protected controls, some games, remote sessions, and custom input stacks may reject synthetic input.
-- IMEs, autocorrect, application shortcuts, and editor behavior can transform delivered input.
-- Text already delivered before a target change cannot be retracted.
+Windows UIPI can block a normal process from typing into an elevated target.
+Secure desktop, protected controls, remote sessions, IMEs, autocorrect, and
+custom input stacks can also reject or transform synthetic input. RSTT does not
+request elevation, use `uiAccess`, inject code, or use the clipboard.

@@ -167,20 +167,8 @@ public sealed class ArchitectureHardeningTests
     public void CaptionHistoryReplacesPartialAndBoundsFinalSegments()
     {
         var history = new CaptionHistory(5);
-        history.Apply(new TranscriptUpdate(
-            "",
-            "hello every",
-            "",
-            false,
-            "hello every",
-            Sequence: 1));
-        history.Apply(new TranscriptUpdate(
-            "",
-            "hello everyone",
-            "",
-            false,
-            "hello everyone",
-            Sequence: 2));
+        history.Apply(Update("", "hello every", false, "hello every", sequence: 1));
+        history.Apply(Update("", "hello everyone", false, "hello everyone", sequence: 2));
 
         var partial = history.Snapshot();
         Assert.Empty(partial.FinalSegments);
@@ -189,8 +177,7 @@ public sealed class ArchitectureHardeningTests
 
         for (var index = 0; index < 7; index++)
         {
-            history.Apply(new TranscriptUpdate(
-                "",
+            history.Apply(Update(
                 "",
                 "",
                 true,
@@ -211,10 +198,11 @@ public sealed class ArchitectureHardeningTests
     {
         var policy = new FinalOnlyCommitPolicy();
 
-        Assert.Empty(policy.GetStablePrefix("hello", "hello world", false));
-        Assert.Equal(
-            "hello world",
-            policy.GetStablePrefix("hello", "hello world", true));
+        var partial = policy.Process(Hypothesis("hello world", false, 1), "hello world");
+        var final = policy.Process(Hypothesis("hello world", true, 2), "hello world");
+
+        Assert.Empty(partial.Commits);
+        Assert.Equal("hello world", Assert.Single(final.Commits).Text);
     }
 
     [Fact]
@@ -223,23 +211,11 @@ public sealed class ArchitectureHardeningTests
         var stabilizer = new TranscriptStabilizer(
             new TextFormattingPolicy(),
             new FinalOnlyCommitPolicy());
-        stabilizer.Process(new RecognitionResult(
-            "first sentence",
-            true,
-            1,
-            DateTimeOffset.UtcNow));
-        stabilizer.Process(new RecognitionResult(
-            "unfinished fragment",
-            false,
-            2,
-            DateTimeOffset.UtcNow));
+        stabilizer.Process(Hypothesis("first sentence", true, 1));
+        stabilizer.Process(Hypothesis("unfinished fragment", false, 2));
 
         var preserved = stabilizer.ResetCurrentSegment();
-        var next = stabilizer.Process(new RecognitionResult(
-            "second sentence",
-            true,
-            3,
-            DateTimeOffset.UtcNow));
+        var next = stabilizer.Process(Hypothesis("second sentence", true, 3));
 
         Assert.Equal("first sentence", preserved);
         Assert.Equal("first sentence second sentence", next.StableText);
@@ -250,21 +226,8 @@ public sealed class ArchitectureHardeningTests
     public void ControlledRecoveryClearsPartialCaptionButKeepsFinalHistory()
     {
         var history = new CaptionHistory();
-        history.Apply(new TranscriptUpdate(
-            "final",
-            "",
-            "final",
-            true,
-            "final",
-            "final",
-            1));
-        history.Apply(new TranscriptUpdate(
-            "final",
-            "partial",
-            "",
-            false,
-            "partial",
-            Sequence: 2));
+        history.Apply(Update("final", "", true, "final", "final", 1));
+        history.Apply(Update("final", "partial", false, "partial", sequence: 2));
 
         var recovered = history.ClearPartial();
 
@@ -283,11 +246,7 @@ public sealed class ArchitectureHardeningTests
         for (var index = 0; index < 1_000; index++)
         {
             var text = $"segment {index:D4} contains enough text to grow the session history";
-            latest = stabilizer.Process(new RecognitionResult(
-                text,
-                true,
-                index,
-                DateTimeOffset.UtcNow));
+            latest = stabilizer.Process(Hypothesis(text, true, index));
         }
 
         Assert.True(latest.StableText.Length <= 6_000);
@@ -295,4 +254,30 @@ public sealed class ArchitectureHardeningTests
         Assert.Contains("segment 0999", latest.NewlyStableText);
         Assert.DoesNotContain("segment 0000", latest.StableText);
     }
+
+    private static RecognitionHypothesis Hypothesis(string text, bool isFinal, long sequence) =>
+        new(
+            new SessionGenerationId(1),
+            sequence,
+            text,
+            isFinal,
+            DateTimeOffset.UtcNow,
+            "en",
+            "test-engine");
+
+    private static TranscriptUpdate Update(
+        string stable,
+        string pending,
+        bool isFinal,
+        string current,
+        string? finalized = null,
+        long sequence = 0) =>
+        new(
+            new TranscriptSnapshot(stable, stable, pending),
+            Array.Empty<TranscriptCommit>(),
+            isFinal,
+            current,
+            finalized,
+            sequence,
+            new SessionGenerationId(1));
 }

@@ -11,12 +11,13 @@ Windows render endpoint
   → bounded normalized-audio channel (48)
   → input-driven sherpa-onnx engine
   → bounded ordered result channel (128)
-  ├─ TranscriptStabilizer + CaptionHistory
-  │    → final updates immediately
-  │    → partial updates coalesced to 20 Hz
+  ├─ model-aware ITranscriptCommitPolicy + CaptionHistory
+  │    → typed snapshot and zero-or-more TranscriptCommit values
+  │    → final updates immediately; partial UI coalesced to 20 Hz
   └─ bounded ordered injection channel (128)
-       → foreground/UIPI checks
-       → paced UTF-16 SendInput
+       → exact-HWND/UIPI checks
+       → bounded single-consumer injection channel (64)
+       → 64-unit UTF-16 SendInput blocks
 ```
 
 ## Assembly ownership
@@ -53,10 +54,17 @@ The engine accepts normalized audio incrementally and asks sherpa-onnx to decode
 1. A start resets transcript/session state and creates a new generation ID.
 2. The engine stream starts before capture.
 3. The capture, result, injection, and UI workers belong to that generation.
-4. Every result and injection request checks the current generation.
-5. Stop first stops accepting capture, awaits audio, deliberately finalizes the stream, drains results/injection, publishes the last UI value, cancels the UI timer, and clears transient queues.
-6. The loaded recognizer remains warm for the next start.
-7. A model reload happens only after the active session has stopped.
+4. Every audio chunk, result, caption, commit, and injection request carries and
+   checks the current generation.
+5. Stop enters `Completing` while final commits are still accepted, stops
+   capture, drains conversion/normalized audio, drains that audio into the
+   recognizer, calls the real `OnlineStream.InputFinished()`, decodes and emits
+   the terminal result, drains result/commit/injection workers, and only then
+   marks the generation stopped.
+6. A five-second overall deadline hard-cancels only the incomplete stage and
+   records its exact name.
+7. The loaded recognizer remains warm for the next start.
+8. A model reload happens only after the active session has stopped.
 
 State access is protected separately from the asynchronous lifecycle semaphore so a faulting worker cannot race a user stop transition.
 
@@ -70,7 +78,13 @@ If a native recognition call throws, a session permits exactly one controlled st
 
 ## Transcript and caption contract
 
-One result worker owns hypothesis ordering. `ITranscriptCommitPolicy` separates live visual hypotheses from irreversible injection policy. Production uses `FinalOnlyCommitPolicy`: partials update the dashboard/overlay, while only endpoint-final text enters the injection channel. The dashboard session preview keeps the most recent 6,000 characters so WPF layout/allocation cost cannot grow for the entire lifetime of a long session.
+One result worker owns hypothesis ordering. `ITranscriptCommitPolicy` produces
+`TranscriptSnapshot` plus zero-or-more `TranscriptCommit` values. Online native
+and buffered engines use `StablePrefixCommitPolicy` with whole-word stability,
+two confirmations, two-word holdback, and unconditional final-tail flush.
+Offline/VAD engines use `FinalOnlyCommitPolicy`. The dashboard session preview
+keeps the most recent 6,000 characters so WPF layout/allocation cost cannot grow
+for the entire lifetime of a long session.
 
 `CaptionHistory` stores at most 100 finalized segments and one current partial. The visible overlay further limits rendered segments to its configured line count. Updating a partial replaces the prior partial.
 
@@ -88,10 +102,17 @@ One result worker owns hypothesis ordering. `ITranscriptCommitPolicy` separates 
 - writes the manifest last; and
 - promotes the completed directory without exposing a partially valid model.
 
-The active recognizer is unloaded before active files are deleted or replaced.
+“Use now” selects and warms the active model without changing the persisted
+default. “Set default” is a distinct operation. A listening-time switch confirms
+with the user, completes the controlled stop/flush, loads the new engine through
+`ISpeechEngineFactory`, and restarts only after load succeeds. The active
+recognizer is unloaded before active files are deleted or replaced.
 
 ## Focus and local-data boundaries
 
-The caption overlay is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, uses `ShowActivated=false`, and does not use activation toggling tricks. `SendInput` resolves the current foreground process immediately before delivery and rechecks it every 16 UTF-16 code units.
+The caption overlay is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, uses
+`ShowActivated=false`, and does not use activation toggling tricks. `SendInput`
+retains and verifies the exact foreground HWND around every 64 UTF-16-unit
+block.
 
 Raw audio, partial hypotheses, and caption objects are transient. Settings are atomically replaced. Logs contain operational metadata but not raw audio or full conversations.

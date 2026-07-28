@@ -1,5 +1,11 @@
 # Performance diagnosis and results
 
+> Evidence scope: the ASR/30-minute measurements below were captured before the
+> 2026-07-28 typed-contract, finalization, and injection hardening changes. The
+> current revision passed 73/73 Debug and Release tests and a published-launch
+> smoke test, but its 30-minute performance/commit/injection acceptance run has
+> not yet been repeated. Do not present the older measurements as a fresh run.
+
 Measured on 2026-07-28:
 
 | Component | Value |

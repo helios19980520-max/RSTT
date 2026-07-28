@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Compute;
 using RSTT.Core.Models;
@@ -7,31 +6,28 @@ using RSTT.Core.Models;
 namespace RSTT.Infrastructure;
 
 /// <summary>
-/// Separates adapter presence from executable runtime capability. The standard RSTT package
-/// currently contains sherpa's CPU runtime, so CUDA is never advertised as available merely
-/// because an NVIDIA adapter exists.
+/// Reports hardware and each runtime readiness layer independently. Adapter
+/// presence alone never makes CUDA selectable.
 /// </summary>
 public sealed class WindowsComputeDeviceService : IComputeDeviceService
 {
+    private readonly IHardwareDetectionService _hardware;
     private IReadOnlyList<ComputeBackendProbe>? _cached;
 
-    public Task<IReadOnlyList<ComputeBackendProbe>> ProbeAsync(CancellationToken cancellationToken = default)
+    public WindowsComputeDeviceService(IHardwareDetectionService hardware)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_cached ??= Probe());
+        _hardware = hardware;
     }
 
-    public async Task<ComputeSelectionResult> SelectAsync(
-        ComputeBackend requested,
-        ModelDescriptor model,
+    public async Task<IReadOnlyList<ComputeBackendProbe>> ProbeAsync(
         CancellationToken cancellationToken = default)
     {
-        var probes = await ProbeAsync(cancellationToken).ConfigureAwait(false);
-        return ComputeSelectionPolicy.Select(requested, model, probes);
-    }
+        if (_cached is not null)
+        {
+            return _cached;
+        }
 
-    private static List<ComputeBackendProbe> Probe()
-    {
+        var hardware = await _hardware.DetectAsync(cancellationToken).ConfigureAwait(false);
         var cpu = new ComputeDeviceInfo(
             Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER") ?? "Windows CPU",
             "CPU",
@@ -43,100 +39,159 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
             true);
         var probes = new List<ComputeBackendProbe>
         {
-            new(ComputeBackend.Cpu, true, "CPU inference is available.", cpu),
+            new(ComputeBackend.Cpu, true, "CPU sherpa runtime is available.", cpu),
         };
-
-        var adapters = EnumerateDisplayAdapters();
-        var nvidia = adapters.FirstOrDefault(adapter =>
+        var nvidia = hardware.Adapters.FirstOrDefault(adapter =>
             adapter.Vendor.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase));
         if (nvidia is null)
         {
             probes.Add(new ComputeBackendProbe(
                 ComputeBackend.Cuda,
                 false,
-                "No NVIDIA display adapter was detected."));
-            return probes;
+                "No physical NVIDIA adapter was detected through DXGI."));
+            return _cached = probes;
         }
 
+        var layers = ProbeCudaRuntimeLayers(nvidia);
+        var dependenciesPresent = layers
+            .Where(layer => layer.Layer is ComputeReadinessLayer.CudaRuntime or
+                ComputeReadinessLayer.Cudnn or
+                ComputeReadinessLayer.SherpaCudaRuntime or
+                ComputeReadinessLayer.ProviderLoad)
+            .All(layer => layer.IsReady);
+        var firstMissing = layers.FirstOrDefault(layer => !layer.IsReady);
         probes.Add(new ComputeBackendProbe(
             ComputeBackend.Cuda,
             false,
-            $"{nvidia.Name} detected, but this package contains the CPU sherpa-onnx runtime. " +
-            "Install the matching verified CUDA runtime package before selecting CUDA.",
+            dependenciesPresent
+                ? "CUDA dependencies are present, but recognizer load, warmup, and decode have not been verified; CUDA remains unavailable."
+                : firstMissing?.Status ?? "CUDA worker dependencies are incomplete.",
             nvidia));
-        return probes;
+        return _cached = probes;
     }
 
-    private static List<ComputeDeviceInfo> EnumerateDisplayAdapters()
+    public async Task<ComputeSelectionResult> SelectAsync(
+        ComputeBackend requested,
+        ModelDescriptor model,
+        CancellationToken cancellationToken = default)
     {
-        var result = new List<ComputeDeviceInfo>();
-        for (uint index = 0; ; index++)
+        var probes = await ProbeAsync(cancellationToken).ConfigureAwait(false);
+        return ComputeSelectionPolicy.Select(requested, model, probes);
+    }
+
+    public async Task<ComputeDiagnosticsReport> GetDiagnosticsAsync(
+        ComputeBackend requested,
+        ModelDescriptor? model = null,
+        CancellationToken cancellationToken = default)
+    {
+        var hardware = await _hardware.DetectAsync(cancellationToken).ConfigureAwait(false);
+        var nvidia = hardware.Adapters.FirstOrDefault(adapter =>
+            adapter.Vendor.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase));
+        var layers = nvidia is null
+            ? new List<ComputeLayerStatus>
+            {
+                new(
+                    ComputeReadinessLayer.Hardware,
+                    false,
+                    "No physical NVIDIA adapter was detected through DXGI."),
+            }
+            : ProbeCudaRuntimeLayers(nvidia);
+        if (model is not null)
         {
-            var displayDevice = new DisplayDevice { Size = Marshal.SizeOf<DisplayDevice>() };
-            if (!EnumDisplayDevices(null, index, ref displayDevice, 0))
-            {
-                break;
-            }
-
-            if ((displayDevice.StateFlags & DisplayDeviceStateFlags.MirroringDriver) != 0 ||
-                string.IsNullOrWhiteSpace(displayDevice.DeviceString))
-            {
-                continue;
-            }
-
-            var vendor = displayDevice.DeviceString.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase)
-                ? "NVIDIA"
-                : displayDevice.DeviceString.Contains("AMD", StringComparison.OrdinalIgnoreCase) ||
-                  displayDevice.DeviceString.Contains("Radeon", StringComparison.OrdinalIgnoreCase)
-                    ? "AMD"
-                    : displayDevice.DeviceString.Contains("Intel", StringComparison.OrdinalIgnoreCase)
-                        ? "Intel"
-                        : "Unknown";
-            result.Add(new ComputeDeviceInfo(
-                displayDevice.DeviceString,
-                vendor,
-                0,
-                0,
-                string.Empty,
-                [],
-                vendor is "NVIDIA" or "AMD",
-                vendor == "Intel"));
+            layers.Add(new ComputeLayerStatus(
+                ComputeReadinessLayer.ModelCompatibility,
+                model.CudaSupported,
+                model.CudaSupported
+                    ? $"{model.DisplayName} declares CUDA compatibility."
+                    : $"{model.DisplayName} is CPU-only."));
         }
 
-        return result;
+        var selection = model is null
+            ? new ComputeSelectionResult(
+                requested,
+                ComputeBackend.Cpu,
+                requested != ComputeBackend.Cpu,
+                "No model was supplied for backend selection.")
+            : await SelectAsync(requested, model, cancellationToken).ConfigureAwait(false);
+        return new ComputeDiagnosticsReport(
+            layers,
+            requested,
+            selection.Selected,
+            selection.Selected == ComputeBackend.Cuda
+                ? "CUDA Ready (decode not yet verified)"
+                : "CPU Active");
     }
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumDisplayDevices(
-        string? device,
-        uint deviceNumber,
-        ref DisplayDevice displayDevice,
-        uint flags);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct DisplayDevice
+    private static List<ComputeLayerStatus> ProbeCudaRuntimeLayers(ComputeDeviceInfo adapter)
     {
-        public int Size;
+        var cudaRuntime = CanLoad("cudart64_12.dll", out var cudaMessage);
+        var cudnn = CanLoad("cudnn64_9.dll", out var cudnnMessage);
+        var provider = CanLoad("onnxruntime_providers_cuda.dll", out var providerMessage);
+        var cudaWorker = File.Exists(Path.Combine(
+            AppContext.BaseDirectory,
+            "workers",
+            "cuda-12",
+            "RSTT.Speech.Worker.exe"));
 
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-        public string DeviceName;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string DeviceString;
-
-        public DisplayDeviceStateFlags StateFlags;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string DeviceId;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string DeviceKey;
+        return
+        [
+            new(
+                ComputeReadinessLayer.Hardware,
+                true,
+                $"{adapter.Name} detected (VEN_{adapter.VendorId:X4}, DEV_{adapter.DeviceId:X4}, {adapter.DedicatedMemory / 1024d / 1024d:N0} MiB dedicated)."),
+            new(
+                ComputeReadinessLayer.Driver,
+                true,
+                string.IsNullOrWhiteSpace(adapter.DriverVersion)
+                    ? "NVIDIA adapter is available; driver version was not exposed by DXGI."
+                    : $"NVIDIA driver {adapter.DriverVersion} is installed.",
+                adapter.DriverVersion),
+            new(
+                ComputeReadinessLayer.CudaRuntime,
+                cudaRuntime,
+                cudaMessage,
+                "12.x"),
+            new(
+                ComputeReadinessLayer.Cudnn,
+                cudnn,
+                cudnnMessage,
+                "9.x"),
+            new(
+                ComputeReadinessLayer.SherpaCudaRuntime,
+                cudaWorker,
+                cudaWorker
+                    ? "The versioned CUDA 12 worker is installed."
+                    : "The optional versioned RSTT CUDA Accelerator Pack is not installed.",
+                "sherpa-onnx 1.13.4"),
+            new(
+                ComputeReadinessLayer.ProviderLoad,
+                provider,
+                providerMessage),
+            new(
+                ComputeReadinessLayer.RecognizerLoad,
+                false,
+                "Not tested in this process."),
+            new(
+                ComputeReadinessLayer.Warmup,
+                false,
+                "Not tested in this process."),
+            new(
+                ComputeReadinessLayer.ActiveInference,
+                false,
+                "CUDA Active is reported only after a successful decode."),
+        ];
     }
 
-    [Flags]
-    private enum DisplayDeviceStateFlags
+    private static bool CanLoad(string libraryName, out string message)
     {
-        MirroringDriver = 0x00000008,
+        if (!NativeLibrary.TryLoad(libraryName, out var handle))
+        {
+            message = $"{libraryName} could not be loaded.";
+            return false;
+        }
+
+        NativeLibrary.Free(handle);
+        message = $"{libraryName} loaded successfully.";
+        return true;
     }
 }

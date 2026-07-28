@@ -42,17 +42,36 @@ Consequently, this pass does **not** claim GPU execution. The test PC's RTX 2060
 
 The selection result records the request, actual backend, fallback flag, reason, and device. The speech engine uses only the selected provider string when creating the recognizer and logs the actual provider, model, thread count, profile, and reason.
 
-## Startup probe
+## Detection and diagnostics
 
-`WindowsComputeDeviceService` always publishes a CPU probe. It enumerates Windows display adapters to distinguish no NVIDIA hardware from NVIDIA hardware with an unavailable runtime. Probe results are cached for the process lifetime and displayed in Settings.
+`WindowsHardwareDetectionService` enumerates DXGI 1.1 adapters, filters software
+adapters, and reports vendor/device IDs plus dedicated/shared memory. NVIDIA
+command-line tooling is supplemental evidence only.
 
-Future GPU packaging must extend this probe with a real provider load/warmup check before `IsAvailable=true`. File presence alone is insufficient.
+`WindowsComputeDeviceService` reports each layer independently:
+
+1. hardware;
+2. driver;
+3. CUDA runtime;
+4. cuDNN;
+5. sherpa CUDA runtime;
+6. ONNX provider load;
+7. model compatibility;
+8. recognizer load;
+9. warmup; and
+10. active-session inference.
+
+The Settings diagnostics self-test includes those layers, ASR, audio, and
+performance data. “Copy Diagnostics” excludes transcript content.
+
+File presence is only dependency evidence. `CUDA Active` is not shown until an
+actual decode has occurred with provider `cuda`.
 
 ## AMD and Intel
 
 No DirectML, ROCm, OpenVINO, or other accelerator provider is shipped. AMD/Intel adapter presence therefore does not create an activatable backend. CPU remains the fallback until a native engine is integrated and measured.
 
-## Packaging strategy
+## Packaging strategy and current boundary
 
 Keep CPU and GPU runtime packages separable:
 
@@ -61,6 +80,13 @@ Keep CPU and GPU runtime packages separable:
 - both use the same model/catalog/session architecture;
 - model downloads are not duplicated;
 - only one complete recognizer is active at a time.
+
+The base CPU package is implemented and verified. The versioned named-pipe
+worker and CUDA Accelerator Pack are not yet shipped in this repository because
+the matching CUDA 12.x/cuDNN 9.x/provider bundle and redistribution review are
+not complete. Consequently Auto and explicit CUDA safely select CPU with a
+layer-specific reason on the current machine; this document does not claim CUDA
+inference.
 
 References:
 

@@ -2,12 +2,10 @@ using RSTT.Core.Models;
 
 namespace RSTT.Core.Abstractions;
 
-public interface IComputeDeviceService
+/// <summary>
+/// Compatibility surface for existing callers. New diagnostics use the more
+/// explicit hardware/backend services.
+/// </summary>
+public interface IComputeDeviceService : IComputeBackendService
 {
-    Task<IReadOnlyList<ComputeBackendProbe>> ProbeAsync(CancellationToken cancellationToken = default);
-
-    Task<ComputeSelectionResult> SelectAsync(
-        ComputeBackend requested,
-        ModelDescriptor model,
-        CancellationToken cancellationToken = default);
 }
