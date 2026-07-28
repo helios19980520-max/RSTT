@@ -9,22 +9,28 @@ namespace RSTT.Core.Transcription;
 /// </summary>
 public sealed class TranscriptStabilizer
 {
+    private const int MaximumTranscriptCharacters = 6_000;
     private readonly TextFormattingPolicy _formatting;
+    private readonly ITranscriptCommitPolicy _commitPolicy;
     private string _previousHypothesis = string.Empty;
     private string _segmentConfirmedText = string.Empty;
     private string _confirmedText = string.Empty;
 
-    public TranscriptStabilizer(TextFormattingPolicy formatting)
+    public TranscriptStabilizer(
+        TextFormattingPolicy formatting,
+        ITranscriptCommitPolicy? commitPolicy = null)
     {
         _formatting = formatting;
+        _commitPolicy = commitPolicy ?? new StablePrefixCommitPolicy();
     }
 
     public TranscriptUpdate Process(RecognitionResult recognitionResult)
     {
         var current = _formatting.Normalize(recognitionResult.Text);
-        var stableCandidate = recognitionResult.IsFinal
-            ? current
-            : GetCommonCompletedPrefix(_previousHypothesis, current);
+        var stableCandidate = _commitPolicy.GetStablePrefix(
+            _previousHypothesis,
+            current,
+            recognitionResult.IsFinal);
         var stableContent = GetUnconfirmedSegmentSuffix(stableCandidate);
 
         stableContent = _formatting.Normalize(stableContent);
@@ -33,13 +39,20 @@ public sealed class TranscriptStabilizer
         {
             var appendedText = _formatting.Append(_confirmedText, stableContent);
             appendDelta = appendedText[_confirmedText.Length..];
-            _confirmedText = appendedText;
+            _confirmedText = BoundTranscript(appendedText);
             _segmentConfirmedText = _formatting.Append(_segmentConfirmedText, stableContent);
         }
 
         _previousHypothesis = current;
         var pending = GetUnconfirmedSegmentSuffix(current);
-        var update = new TranscriptUpdate(_confirmedText, pending, appendDelta, recognitionResult.IsFinal);
+        var update = new TranscriptUpdate(
+            _confirmedText,
+            pending,
+            appendDelta,
+            recognitionResult.IsFinal,
+            current,
+            recognitionResult.IsFinal ? current : null,
+            recognitionResult.SequenceNumber);
         if (recognitionResult.IsFinal)
         {
             ResetSegment();
@@ -53,6 +66,17 @@ public sealed class TranscriptStabilizer
         _previousHypothesis = string.Empty;
         _segmentConfirmedText = string.Empty;
         _confirmedText = string.Empty;
+    }
+
+    /// <summary>
+    /// Drops only the revisable hypothesis state after a recognizer-stream recovery while
+    /// preserving transcript text already committed during the current session.
+    /// </summary>
+    public string ResetCurrentSegment()
+    {
+        _previousHypothesis = string.Empty;
+        _segmentConfirmedText = string.Empty;
+        return _confirmedText;
     }
 
     private string GetUnconfirmedSegmentSuffix(string hypothesis)
@@ -115,48 +139,17 @@ public sealed class TranscriptStabilizer
     private static string NormalizeAnchorWord(string word) =>
         word.Trim(',', '.', ';', ':', '!', '?', '%', '(', ')', '[', ']', '{', '}', '"', '\'');
 
-    private static string GetCommonCompletedPrefix(string previous, string current)
+    private static string BoundTranscript(string text)
     {
-        if (previous.Length == 0 || current.Length == 0)
+        if (text.Length <= MaximumTranscriptCharacters)
         {
-            return string.Empty;
+            return text;
         }
 
-        var equalLength = 0;
-        var compareLength = Math.Min(previous.Length, current.Length);
-        while (equalLength < compareLength && char.ToUpperInvariant(previous[equalLength]) == char.ToUpperInvariant(current[equalLength]))
-        {
-            equalLength++;
-        }
-
-        if (equalLength == previous.Length && equalLength == current.Length)
-        {
-            return previous;
-        }
-
-        if (equalLength == previous.Length)
-        {
-            return previous;
-        }
-
-        if (equalLength == current.Length)
-        {
-            return string.Empty;
-        }
-
-        var boundary = -1;
-        for (var index = 0; index < equalLength; index++)
-        {
-            if (char.IsWhiteSpace(previous[index]))
-            {
-                boundary = index;
-            }
-            else if (previous[index] is ',' or '.' or ';' or ':' or '!' or '?')
-            {
-                boundary = index + 1;
-            }
-        }
-
-        return boundary <= 0 ? string.Empty : previous[..boundary].Trim();
+        var minimumStart = text.Length - MaximumTranscriptCharacters;
+        var wordBoundary = text.IndexOf(' ', minimumStart);
+        return wordBoundary >= 0 && wordBoundary < text.Length - 1
+            ? text[(wordBoundary + 1)..]
+            : text[^MaximumTranscriptCharacters..];
     }
 }

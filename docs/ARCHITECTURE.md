@@ -1,91 +1,97 @@
 # RSTT architecture
 
-RSTT is a Windows x64, local-first WPF application. Its normal recognition path does not write WAV files and does not call a network transcription service.
+RSTT is a Windows x64, local-first WPF application. Its recognition path is input-driven and bounded from the Windows audio callback through the UI and text-injection sinks.
 
 ```text
 Windows render endpoint
-  → NAudio WASAPI loopback callback
-  → channel mix + incremental resample to 16 kHz mono float
-  → real audio-level event + bounded Channel<AudioChunk>
-  → background sherpa-onnx online recognizer
-  → partial/final RecognitionResult
-  → ordered TranscriptStabilizer
-  ├─ WPF dashboard + no-activate caption overlay
-  └─ newly stable text only
+  → NAudio WASAPI callback
+  → ArrayPool-backed packet copy + TryWrite
+  → bounded raw-packet channel (32)
+  → downmix + direct incremental resample to 16 kHz mono
+  → bounded normalized-audio channel (48)
+  → input-driven sherpa-onnx engine
+  → bounded ordered result channel (128)
+  ├─ TranscriptStabilizer + CaptionHistory
+  │    → final updates immediately
+  │    → partial updates coalesced to 20 Hz
+  └─ bounded ordered injection channel (128)
        → foreground/UIPI checks
        → paced UTF-16 SendInput
 ```
 
-## Assembly boundaries
+## Assembly ownership
 
 | Project | Responsibility |
 | --- | --- |
-| `RSTT.Core` | Contracts, settings, state snapshots, domain records, transcript stability |
-| `RSTT.Audio` | Device enumeration, WASAPI loopback, format conversion, meter events, bounded audio transport |
-| `RSTT.Speech` | Managed model catalogue/download/validation and sherpa-onnx stream lifecycle |
-| `RSTT.Input` | Foreground-process safety and x64 Windows Unicode input |
-| `RSTT.Infrastructure` | Local folders, atomic JSON settings, rolling diagnostics |
-| `RSTT.App` | WPF presentation, dependency composition, coordinator, overlay, tray, and hotkeys |
+| `RSTT.Core` | Contracts, settings, model/compute metadata, state machine, transcript policies, caption history |
+| `RSTT.Audio` | Device enumeration, WASAPI capture, pooled packet transport, conversion, metering |
+| `RSTT.Speech` | Embedded catalog, managed download/install lifecycle, sherpa-onnx resources |
+| `RSTT.Input` | Foreground safety and Win32 Unicode `SendInput` |
+| `RSTT.Infrastructure` | App paths, atomic settings, compute probes, performance monitor, rolling logs |
+| `RSTT.App` | WPF shell, view model, coordinator, caption window, tray, and hotkeys |
 
-Core has no WPF dependency. Platform projects depend on Core contracts, and App composes them.
+Core is UI-independent. Native object lifetime remains inside Speech, and WPF objects remain inside App.
 
-## Threading and backpressure
+## Callback and backpressure rules
 
-- The WASAPI callback performs conversion, level calculation, and a non-blocking channel write. It never waits for inference.
-- The channel is bounded. A full channel drops audio and records diagnostics so latency cannot grow without limit.
-- sherpa-onnx model construction and decode work run away from the WPF dispatcher.
-- Recognition events are serialized before stabilization, caption publication, and text injection. This preserves hypothesis order.
-- Settings writes use a semaphore and replace a temporary JSON file atomically.
-- UI-bound events are dispatched back to the WPF dispatcher by the view model.
+The WASAPI callback may copy the incoming packet into an `ArrayPool<byte>` buffer and perform a non-blocking `TryWrite`. It may not resample, allocate large intermediate arrays, decode, write per-packet logs, call WPF, or wait for a consumer.
 
-## Recognition stream lifecycle
+One worker owns downmix/resample/RMS work. The meter is capped at 25 Hz. When a bounded stage cannot accept more input, RSTT drops bounded work and records duration/age rather than growing latency and memory indefinitely.
 
-The selected verified model is loaded once and retained across ordinary stop/start cycles. Each listening session owns an online stream.
+The ASR worker naturally sleeps in `await foreach` while no normalized chunks exist. `IsReady`/`Decode` loops run only after genuinely new audio is accepted or during one deliberate endpoint flush.
 
-1. Audio samples are accepted with their 16 kHz sample rate.
-2. The engine decodes while sherpa-onnx reports readiness.
-3. Endpointed or final streams emit a final result.
-4. A stream that receives `InputFinished()` is disposed and recreated; terminal streams are never reset and reused.
-5. Stop finalizes the active stream, drains the worker, clears transient transcript state, and leaves the model loaded.
-6. Deleting or changing a model unloads the native recognizer before the managed files are changed.
+## Recognition cadence and model profiles
 
-Parakeet Unified selects sherpa-onnx's buffered RNN-T streaming path from model metadata. The installed profile uses a 128-bin feature configuration and an approximate 1.12-second buffered latency.
+`StreamingRecognitionProfile` records chunk/lookahead/expected latency, cache-aware versus buffered behavior, and recommended threads. The recommended 560 ms Nemotron profile is cache-aware. Parakeet's 1120 ms profile is buffered and materially more CPU-intensive on the test machine.
 
-## Transcript stability contract
+The engine accepts normalized audio incrementally and asks sherpa-onnx to decode only while the stream reports work ready. Decode time and the audio duration credited since the previous decode are recorded. RTF is the rolling ratio of decoder time to input-audio time, including terminal flush work.
 
-`TranscriptStabilizer` compares ordered hypotheses and keeps committed and pending text separately. It confirms only a completed common prefix across revisions. A final result flushes the remaining suffix.
+## Session lifecycle
 
-The caption path sees both committed and pending text. The injection path sees only `NewlyStableText`; it does not receive raw partial hypotheses or previously committed history. This keeps normal output append-only and prevents ordinary ASR revisions from duplicating typed text.
+`RecognitionCoordinator` serializes start, stop, reload, and unload operations and validates transitions through `TranscriptionSessionStateMachine`.
 
-## State and recovery
+1. A start resets transcript/session state and creates a new generation ID.
+2. The engine stream starts before capture.
+3. The capture, result, injection, and UI workers belong to that generation.
+4. Every result and injection request checks the current generation.
+5. Stop first stops accepting capture, awaits audio, deliberately finalizes the stream, drains results/injection, publishes the last UI value, cancels the UI timer, and clears transient queues.
+6. The loaded recognizer remains warm for the next start.
+7. A model reload happens only after the active session has stopped.
 
-`RecognitionCoordinator` owns application states such as initialization, missing/downloading/loading model, ready, listening, stopping, and error. Missing or invalid model files keep the desktop shell usable: audio testing, model repair, settings, logs, and About remain available.
+State access is protected separately from the asynchronous lifecycle semaphore so a faulting worker cannot race a user stop transition.
 
-Expected failures—missing model, download cancellation, device initialization, hotkey collision, UIPI denial—are surfaced as recoverable UI state or diagnostics. They do not silently switch to a cloud service.
+## Health diagnostics and recovery
+
+The performance monitor exposes process CPU, working set, managed heap/GC, thread count, callback rate, queue depth/duration/age, dropped audio, decode P50/P95/max, RTF, result/UI/injection rates, provider, model, and device.
+
+The lightweight health check runs once per second. If fresh audio and a speech-level signal continue but no recognition result arrives for five seconds, it writes one rate-limited diagnostic with queue, decode, CPU, provider, and model context.
+
+If a native recognition call throws, a session permits exactly one controlled stream reset. The result worker clears only revisable hypothesis/partial-caption state while preserving finalized session history. A second failure crosses the session boundary, stops recognition, and surfaces an error; there is no restart loop.
+
+## Transcript and caption contract
+
+One result worker owns hypothesis ordering. `ITranscriptCommitPolicy` separates live visual hypotheses from irreversible injection policy. Production uses `FinalOnlyCommitPolicy`: partials update the dashboard/overlay, while only endpoint-final text enters the injection channel. The dashboard session preview keeps the most recent 6,000 characters so WPF layout/allocation cost cannot grow for the entire lifetime of a long session.
+
+`CaptionHistory` stores at most 100 finalized segments and one current partial. The visible overlay further limits rendered segments to its configured line count. Updating a partial replaces the prior partial.
 
 ## Model installation boundary
 
-`LocalModelManager` owns the single V1 catalogue entry and its exact artifact metadata. It:
+`LocalModelManager` is the only runtime component with a network path. It:
 
-- downloads through HTTPS into `.partial` files;
-- resumes with HTTP Range when supported;
-- verifies exact length and SHA-256 before promotion;
-- writes `model.json` only after every artifact is valid;
-- checks manifest identity, safe relative paths, existence, and exact lengths at startup; and
-- serializes download/delete operations.
+- reads an embedded, versioned catalog;
+- stages artifacts under `Models\.downloads\<model-id>`;
+- resumes with a validated HTTP Range response;
+- uses `ResponseHeadersRead` and a pooled 256 KiB buffer;
+- throttles progress publication to roughly 13 Hz;
+- verifies exact bytes and SHA-256;
+- checks disk headroom and safe relative paths;
+- writes the manifest last; and
+- promotes the completed directory without exposing a partially valid model.
 
-Recognition makes no network requests. The model manager is the only runtime component with a network path.
+The active recognizer is unloaded before active files are deleted or replaced.
 
-## Focus and Windows integrity
+## Focus and local-data boundaries
 
-The caption overlay is a `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` window and never calls `Activate()`. Unicode input first rejects a missing foreground window and RSTT's own process. It then checks that the same process remains foreground while the segment is emitted. Windows UIPI remains authoritative; RSTT does not elevate or bypass it.
+The caption overlay is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, uses `ShowActivated=false`, and does not use activation toggling tricks. `SendInput` resolves the current foreground process immediately before delivery and rechecks it every 16 UTF-16 code units.
 
-## Local data
-
-| Data | Location | Content policy |
-| --- | --- | --- |
-| Settings | `%LOCALAPPDATA%\Helios\RSTT\settings.json` | User preferences; atomic replacement |
-| Models | `%LOCALAPPDATA%\Helios\RSTT\Models` | ONNX and token artifacts plus generated manifest |
-| Logs | `%LOCALAPPDATA%\Helios\RSTT\Logs` | Operational metadata; no raw audio or complete transcript |
-
-Audio chunks and ASR hypotheses are transient in-memory data.
+Raw audio, partial hypotheses, and caption objects are transient. Settings are atomically replaced. Logs contain operational metadata but not raw audio or full conversations.

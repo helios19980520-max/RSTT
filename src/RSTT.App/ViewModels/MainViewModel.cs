@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Windows;
+using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
 using RSTT.App.Infrastructure;
 using RSTT.App.Services;
@@ -8,6 +9,7 @@ using RSTT.Core.Abstractions;
 using RSTT.Core.Models;
 using RSTT.Core.Settings;
 using RSTT.Core.State;
+using RSTT.Core.Transcription;
 
 namespace RSTT.App.ViewModels;
 
@@ -19,7 +21,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ISettingsService _settings;
     private readonly IAppPaths _paths;
     private readonly IApplicationStateService _applicationState;
+    private readonly CaptionHistory _captionHistory;
+    private readonly IPerformanceMonitor _performance;
+    private readonly IComputeDeviceService _computeDevices;
     private readonly ILogger<MainViewModel> _logger;
+    private readonly DispatcherTimer _telemetryTimer;
     private CancellationTokenSource? _modelDownloadCancellation;
     private CancellationTokenSource? _settingsSaveDebounce;
     private string _statusText = "Initializing…";
@@ -27,9 +33,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string _previewPendingText = string.Empty;
     private string _actionMessage = "Everything runs locally on this PC.";
     private string _downloadProgressText = string.Empty;
+    private string _toggleListeningHotkey = "Ctrl+Alt+R";
+    private string _toggleInjectionHotkey = "Ctrl+Alt+T";
+    private string _toggleCaptionsHotkey = "Ctrl+Alt+C";
+    private string _toggleListeningHotkeyError = string.Empty;
+    private string _toggleInjectionHotkeyError = string.Empty;
+    private string _toggleCaptionsHotkeyError = string.Empty;
+    private string _computeStatus = "Checking available compute backends…";
     private AudioDevice? _selectedAudioDevice;
     private ModelInformation? _selectedModel;
+    private CaptionSegment? _currentCaption;
+    private PerformanceSnapshot? _performanceSnapshot;
     private ApplicationState _currentState = ApplicationState.Initializing;
+    private ComputeBackend _computeBackend = ComputeBackend.Auto;
+    private RecognitionMode _recognitionMode = RecognitionMode.Balanced;
     private int _selectedPageIndex;
     private bool _isTextInjectionEnabled = true;
     private bool _isCaptionOverlayEnabled = true;
@@ -38,6 +55,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _autoStartListening;
     private bool _captionAlwaysOnTop = true;
     private bool _captionShowStableTextOnly;
+    private bool _captionPositionLocked = true;
+    private bool _captionShowStatusIndicator = true;
     private bool _isDownloadingModel;
     private bool _isRefreshingDevices;
     private bool _isTestingAudio;
@@ -46,6 +65,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private double _captionFontSize = 28;
     private double _captionOpacity = 0.9;
     private double _captionWidth = 900;
+    private double _captionHeight = 210;
+    private double? _captionLeft;
+    private double? _captionTop;
+    private int _captionMaximumLines = 4;
+    private double _captionLineSpacing = 1.2;
     private double _audioLevel;
     private double _audioPeak;
     private double _downloadProgress;
@@ -58,6 +82,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ISettingsService settings,
         IAppPaths paths,
         IApplicationStateService applicationState,
+        CaptionHistory captionHistory,
+        IPerformanceMonitor performance,
+        IComputeDeviceService computeDevices,
         ILogger<MainViewModel> logger)
     {
         _coordinator = coordinator;
@@ -66,12 +93,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settings = settings;
         _paths = paths;
         _applicationState = applicationState;
+        _captionHistory = captionHistory;
+        _performance = performance;
+        _computeDevices = computeDevices;
         _logger = logger;
+        _telemetryTimer = new DispatcherTimer(
+            TimeSpan.FromSeconds(1),
+            DispatcherPriority.Background,
+            OnTelemetryTick,
+            System.Windows.Application.Current.Dispatcher);
+        _telemetryTimer.Stop();
 
         StartStopCommand = new AsyncRelayCommand(ToggleListeningAsync, CanToggleListening, ReportCommandFailure);
         RefreshDevicesCommand = new AsyncRelayCommand(RefreshAudioDevicesAsync, () => !IsRefreshingDevices, ReportCommandFailure);
         TestAudioCommand = new AsyncRelayCommand(TestAudioAsync, () => !IsTestingAudio && !IsListening, ReportCommandFailure);
-        DownloadModelCommand = new AsyncRelayCommand(DownloadModelAsync, () => !IsDownloadingModel && !IsModelReady, ReportCommandFailure);
+        DownloadModelCommand = new AsyncRelayCommand(
+            DownloadModelAsync,
+            () => CanDownloadSelectedModel,
+            ReportCommandFailure);
+        UseModelCommand = new AsyncRelayCommand(
+            UseSelectedModelAsync,
+            () => CanUseSelectedModel,
+            ReportCommandFailure);
         CancelDownloadCommand = new RelayCommand(CancelModelDownload, () => IsDownloadingModel);
         DeleteModelCommand = new AsyncRelayCommand(DeleteModelAsync, () => IsModelReady && !IsDownloadingModel, ReportCommandFailure);
         RetryModelCommand = new AsyncRelayCommand(RetryModelAsync, () => !IsDownloadingModel, ReportCommandFailure);
@@ -93,6 +136,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<ModelInformation> Models { get; } = [];
 
+    public ObservableCollection<CaptionSegment> CaptionSegments { get; } = [];
+
     public AsyncRelayCommand StartStopCommand { get; }
 
     public AsyncRelayCommand RefreshDevicesCommand { get; }
@@ -100,6 +145,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand TestAudioCommand { get; }
 
     public AsyncRelayCommand DownloadModelCommand { get; }
+
+    public AsyncRelayCommand UseModelCommand { get; }
 
     public RelayCommand CancelDownloadCommand { get; }
 
@@ -284,6 +331,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _captionFontSize, Math.Clamp(value, 18, 48)))
             {
                 _settings.Current.CaptionFontSize = _captionFontSize;
+                OnPropertyChanged(nameof(CaptionLineHeight));
                 PersistSettings();
             }
         }
@@ -315,6 +363,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public double CaptionHeight
+    {
+        get => _captionHeight;
+        set
+        {
+            if (SetProperty(ref _captionHeight, Math.Clamp(value, 120, 720)))
+            {
+                _settings.Current.CaptionHeight = _captionHeight;
+                PersistSettings();
+            }
+        }
+    }
+
+    public double? CaptionLeft
+    {
+        get => _captionLeft;
+        private set
+        {
+            if (SetProperty(ref _captionLeft, value))
+            {
+                _settings.Current.CaptionLeft = value;
+                PersistSettings();
+            }
+        }
+    }
+
+    public double? CaptionTop
+    {
+        get => _captionTop;
+        private set
+        {
+            if (SetProperty(ref _captionTop, value))
+            {
+                _settings.Current.CaptionTop = value;
+                PersistSettings();
+            }
+        }
+    }
+
     public bool CaptionAlwaysOnTop
     {
         get => _captionAlwaysOnTop;
@@ -323,6 +410,62 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _captionAlwaysOnTop, value))
             {
                 _settings.Current.CaptionAlwaysOnTop = value;
+                PersistSettings();
+            }
+        }
+    }
+
+    public bool CaptionPositionLocked
+    {
+        get => _captionPositionLocked;
+        set
+        {
+            if (SetProperty(ref _captionPositionLocked, value))
+            {
+                _settings.Current.CaptionPositionLocked = value;
+                PersistSettings();
+            }
+        }
+    }
+
+    public int CaptionMaximumLines
+    {
+        get => _captionMaximumLines;
+        set
+        {
+            if (SetProperty(ref _captionMaximumLines, Math.Clamp(value, 2, 8)))
+            {
+                _settings.Current.CaptionMaximumLines = _captionMaximumLines;
+                RefreshCaptionCollection();
+                PersistSettings();
+            }
+        }
+    }
+
+    public double CaptionLineSpacing
+    {
+        get => _captionLineSpacing;
+        set
+        {
+            if (SetProperty(ref _captionLineSpacing, Math.Clamp(value, 1, 1.8)))
+            {
+                _settings.Current.CaptionLineSpacing = _captionLineSpacing;
+                OnPropertyChanged(nameof(CaptionLineHeight));
+                PersistSettings();
+            }
+        }
+    }
+
+    public double CaptionLineHeight => CaptionFontSize * CaptionLineSpacing;
+
+    public bool CaptionShowStatusIndicator
+    {
+        get => _captionShowStatusIndicator;
+        set
+        {
+            if (SetProperty(ref _captionShowStatusIndicator, value))
+            {
+                _settings.Current.CaptionShowStatusIndicator = value;
                 PersistSettings();
             }
         }
@@ -341,6 +484,35 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 PersistSettings();
             }
         }
+    }
+
+    public CaptionSegment? CurrentCaption
+    {
+        get => _currentCaption;
+        private set
+        {
+            if (SetProperty(ref _currentCaption, value))
+            {
+                OnPropertyChanged(nameof(CurrentCaptionText));
+                OnPropertyChanged(nameof(HasCurrentCaption));
+            }
+        }
+    }
+
+    public string CurrentCaptionText => IsOverlayPreviewing
+        ? "Pending speech is replaced as recognition becomes more certain."
+        : CaptionShowStableTextOnly
+            ? string.Empty
+            : CurrentCaption?.Text ?? string.Empty;
+
+    public bool HasCurrentCaption => !string.IsNullOrWhiteSpace(CurrentCaptionText);
+
+    public void UpdateCaptionBounds(double left, double top, double width, double height)
+    {
+        CaptionLeft = left;
+        CaptionTop = top;
+        CaptionWidth = width;
+        CaptionHeight = height;
     }
 
     public AudioDevice? SelectedAudioDevice
@@ -407,14 +579,112 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 OnPropertyChanged(nameof(OverlayStableText));
                 OnPropertyChanged(nameof(OverlayPendingText));
+                OnPropertyChanged(nameof(CurrentCaptionText));
+                OnPropertyChanged(nameof(HasCurrentCaption));
             }
         }
+    }
+
+    public ComputeBackend ComputeBackend
+    {
+        get => _computeBackend;
+        set
+        {
+            if (SetProperty(ref _computeBackend, value))
+            {
+                _settings.Current.ComputeBackend = value;
+                ActionMessage = "Compute changes take effect when the model is reloaded.";
+                PersistSettings();
+                _ = RefreshComputeStatusAsync();
+            }
+        }
+    }
+
+    public RecognitionMode RecognitionMode
+    {
+        get => _recognitionMode;
+        set
+        {
+            if (SetProperty(ref _recognitionMode, value))
+            {
+                _settings.Current.RecognitionMode = value;
+                ActionMessage = "Recognition profile changes take effect when the model is reloaded.";
+                PersistSettings();
+            }
+        }
+    }
+
+    public IReadOnlyList<ComputeBackend> ComputeBackends { get; } =
+        Enum.GetValues<ComputeBackend>();
+
+    public IReadOnlyList<RecognitionMode> RecognitionModes { get; } =
+        Enum.GetValues<RecognitionMode>();
+
+    public string ComputeStatus
+    {
+        get => _computeStatus;
+        private set => SetProperty(ref _computeStatus, value);
+    }
+
+    public PerformanceSnapshot? PerformanceSnapshot
+    {
+        get => _performanceSnapshot;
+        private set
+        {
+            if (SetProperty(ref _performanceSnapshot, value))
+            {
+                OnPropertyChanged(nameof(PerformanceSummary));
+            }
+        }
+    }
+
+    public string PerformanceSummary => PerformanceSnapshot is null
+        ? "Waiting for runtime telemetry…"
+        : $"{PerformanceSnapshot.ProcessCpuPercent:N1}% CPU · " +
+          $"{PerformanceSnapshot.RealtimeFactor:N2} RTF · " +
+          $"{PerformanceSnapshot.AudioQueueDurationMs:N0} ms queued · " +
+          $"{PerformanceSnapshot.WorkingSetBytes / 1024d / 1024d:N0} MB";
+
+    public string ToggleListeningHotkey
+    {
+        get => _toggleListeningHotkey;
+        set => SetProperty(ref _toggleListeningHotkey, value);
+    }
+
+    public string ToggleInjectionHotkey
+    {
+        get => _toggleInjectionHotkey;
+        set => SetProperty(ref _toggleInjectionHotkey, value);
+    }
+
+    public string ToggleCaptionsHotkey
+    {
+        get => _toggleCaptionsHotkey;
+        set => SetProperty(ref _toggleCaptionsHotkey, value);
+    }
+
+    public string ToggleListeningHotkeyError
+    {
+        get => _toggleListeningHotkeyError;
+        private set => SetProperty(ref _toggleListeningHotkeyError, value);
+    }
+
+    public string ToggleInjectionHotkeyError
+    {
+        get => _toggleInjectionHotkeyError;
+        private set => SetProperty(ref _toggleInjectionHotkeyError, value);
+    }
+
+    public string ToggleCaptionsHotkeyError
+    {
+        get => _toggleCaptionsHotkeyError;
+        private set => SetProperty(ref _toggleCaptionsHotkeyError, value);
     }
 
     public ModelInformation? SelectedModel
     {
         get => _selectedModel;
-        private set
+        set
         {
             if (SetProperty(ref _selectedModel, value))
             {
@@ -425,7 +695,46 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool IsModelReady => SelectedModel?.IsInstalled == true && SelectedModel.Availability == ModelAvailability.Ready;
 
-    public bool ShowOnboarding => !IsModelReady;
+    public bool CanDownloadSelectedModel =>
+        SelectedModel?.Descriptor?.IntegrationStatus == ModelIntegrationStatus.Available &&
+        !IsModelReady &&
+        !IsDownloadingModel;
+
+    public bool CanUseSelectedModel =>
+        IsModelReady &&
+        SelectedModel?.IsActive != true &&
+        !IsListening &&
+        !IsDownloadingModel;
+
+    public string ModelIntegrationText =>
+        SelectedModel?.Descriptor?.IntegrationStatus switch
+        {
+            ModelIntegrationStatus.Available => SelectedModel.IsActive
+                ? "Active"
+                : IsModelReady
+                    ? "Installed"
+                    : "Available",
+            ModelIntegrationStatus.Experimental => "Experimental",
+            ModelIntegrationStatus.ComingLater => "Coming later",
+            _ => "Unknown",
+        };
+
+    public string ModelLicenseText => SelectedModel?.Descriptor?.License ?? "—";
+
+    public string ModelLanguagesText => SelectedModel?.Descriptor?.LanguageDescription ?? "—";
+
+    public string ModelBackendText => SelectedModel?.Descriptor is not { } descriptor
+        ? "—"
+        : descriptor.CudaSupported
+            ? "CPU · CUDA-capable model"
+            : "CPU";
+
+    public ModelInformation? ActiveModel => Models.FirstOrDefault(model =>
+        model.IsActive &&
+        model.IsInstalled &&
+        model.Availability == ModelAvailability.Ready);
+
+    public bool ShowOnboarding => ActiveModel is null;
 
     public bool IsDownloadingModel
     {
@@ -455,7 +764,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ? "—"
         : $"{SelectedModel.DownloadSizeBytes / 1024d / 1024d:N0} MB";
 
-    public string ModelStatusText => SelectedModel?.Availability switch
+    public string ModelStatusText => ActiveModel?.Availability switch
     {
         ModelAvailability.Ready => "Ready",
         ModelAvailability.Downloading => "Downloading",
@@ -467,7 +776,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _ => "Checking…",
     };
 
-    public string ModelStatusGlyph => IsModelReady ? "\uE73E" : "\uE946";
+    public string ModelStatusGlyph => ActiveModel?.Availability == ModelAvailability.Ready
+        ? "\uE73E"
+        : "\uE946";
 
     public bool CanDeleteModel => IsModelReady && !IsDownloadingModel;
 
@@ -477,7 +788,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ApplySettings(_settings.Current);
         RefreshModels();
         await RefreshAudioDevicesAsync().ConfigureAwait(true);
+        await RefreshComputeStatusAsync().ConfigureAwait(true);
         _isInitializing = false;
+        _telemetryTimer.Start();
 
         await _coordinator.InitializeAsync().ConfigureAwait(true);
         if (!IsModelReady)
@@ -495,8 +808,54 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void ToggleCaptionOverlay() => IsCaptionOverlayEnabled = !IsCaptionOverlayEnabled;
 
-    public void ReportHotkeyRegistrationFailure() =>
-        ActionMessage = "One or more global shortcuts are already in use by another app.";
+    public void ConfirmHotkeyRegistration(RsttHotkey hotkey, string gesture)
+    {
+        switch (hotkey)
+        {
+            case RsttHotkey.ToggleListening:
+                _settings.Current.ToggleListeningHotkey = gesture;
+                ToggleListeningHotkeyError = string.Empty;
+                break;
+            case RsttHotkey.ToggleTextInjection:
+                _settings.Current.ToggleInjectionHotkey = gesture;
+                ToggleInjectionHotkeyError = string.Empty;
+                break;
+            case RsttHotkey.ToggleCaptionOverlay:
+                _settings.Current.ToggleCaptionsHotkey = gesture;
+                ToggleCaptionsHotkeyError = string.Empty;
+                break;
+        }
+
+        ActionMessage = $"{gesture} is registered globally.";
+        PersistSettings();
+    }
+
+    public void RejectHotkeyRegistration(
+        RsttHotkey hotkey,
+        string workingGesture,
+        string error)
+    {
+        switch (hotkey)
+        {
+            case RsttHotkey.ToggleListening:
+                _toggleListeningHotkey = workingGesture;
+                ToggleListeningHotkeyError = error;
+                OnPropertyChanged(nameof(ToggleListeningHotkey));
+                break;
+            case RsttHotkey.ToggleTextInjection:
+                _toggleInjectionHotkey = workingGesture;
+                ToggleInjectionHotkeyError = error;
+                OnPropertyChanged(nameof(ToggleInjectionHotkey));
+                break;
+            case RsttHotkey.ToggleCaptionOverlay:
+                _toggleCaptionsHotkey = workingGesture;
+                ToggleCaptionsHotkeyError = error;
+                OnPropertyChanged(nameof(ToggleCaptionsHotkey));
+                break;
+        }
+
+        ActionMessage = error;
+    }
 
     public async Task FlushSettingsAsync()
     {
@@ -566,6 +925,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task RefreshComputeStatusAsync()
+    {
+        try
+        {
+            var probes = await _computeDevices.ProbeAsync().ConfigureAwait(true);
+            var cpu = probes.FirstOrDefault(probe => probe.Backend == ComputeBackend.Cpu);
+            var cuda = probes.FirstOrDefault(probe => probe.Backend == ComputeBackend.Cuda);
+            ComputeStatus = ComputeBackend switch
+            {
+                ComputeBackend.Cpu => cpu?.Status ?? "CPU inference selected.",
+                ComputeBackend.Cuda when cuda?.IsAvailable == true => cuda.Status,
+                ComputeBackend.Cuda => $"CUDA unavailable; RSTT will fall back to CPU. {cuda?.Status}",
+                _ when cuda?.IsAvailable == true => $"Auto will use CUDA. {cuda.Status}",
+                _ => $"Auto will use CPU. {cuda?.Status ?? cpu?.Status}",
+            };
+        }
+        catch (Exception exception)
+        {
+            ComputeStatus = $"Compute probe failed; CPU fallback remains available. {exception.Message}";
+        }
+    }
+
     private async Task TestAudioAsync()
     {
         if (IsTestingAudio || IsListening)
@@ -624,9 +1005,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var progress = new Progress<ModelDownloadProgress>(update =>
         {
             DownloadProgress = update.Fraction * 100;
+            var rate = update.BytesPerSecond <= 0
+                ? string.Empty
+                : $" · {update.BytesPerSecond / 1024d / 1024d:N1} MB/s";
+            var eta = update.Eta is null
+                ? string.Empty
+                : $" · {FormatDuration(update.Eta.Value)} left";
+            var file = update.TotalFiles <= 0
+                ? string.Empty
+                : $" · file {update.CurrentFileIndex}/{update.TotalFiles}";
             DownloadProgressText = update.TotalBytes <= 0
                 ? update.Message
-                : $"{update.Message}  {update.BytesReceived / 1024d / 1024d:N0} / {update.TotalBytes / 1024d / 1024d:N0} MB";
+                : $"{update.Message}{file} · {update.BytesReceived / 1024d / 1024d:N0} / " +
+                  $"{update.TotalBytes / 1024d / 1024d:N0} MB{rate}{eta}";
         });
 
         try
@@ -636,7 +1027,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             DownloadProgress = 100;
             DownloadProgressText = "Verified and installed";
             await _coordinator.ReloadModelAsync().ConfigureAwait(true);
-            ActionMessage = "Parakeet is installed and ready. Press Start listening.";
+            ActionMessage = $"{SelectedModel.DisplayName} is verified, active, and ready.";
             SelectedPageIndex = 0;
         }
         catch (OperationCanceledException)
@@ -652,6 +1043,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _modelDownloadCancellation = null;
             RefreshModels();
         }
+    }
+
+    private async Task UseSelectedModelAsync()
+    {
+        if (SelectedModel is null || !CanUseSelectedModel)
+        {
+            return;
+        }
+
+        var modelName = SelectedModel.DisplayName;
+        await _modelManager.SelectAsync(SelectedModel.Id).ConfigureAwait(true);
+        await _coordinator.ReloadModelAsync().ConfigureAwait(true);
+        RefreshModels(SelectedModel.Id);
+        ActionMessage = $"{modelName} is now the active recognition model.";
     }
 
     private void CancelModelDownload() => _modelDownloadCancellation?.Cancel();
@@ -673,11 +1078,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await _coordinator.UnloadModelAsync().ConfigureAwait(true);
+        var deletingActiveModel = SelectedModel.IsActive;
+        if (deletingActiveModel)
+        {
+            await _coordinator.UnloadModelAsync().ConfigureAwait(true);
+        }
+
         await _modelManager.DeleteAsync(SelectedModel.Id).ConfigureAwait(true);
         RefreshModels();
+        if (deletingActiveModel)
+        {
+            var fallback = Models.FirstOrDefault(model =>
+                model.IsInstalled &&
+                model.Availability == ModelAvailability.Ready);
+            if (fallback is not null)
+            {
+                await _modelManager.SelectAsync(fallback.Id).ConfigureAwait(true);
+                await _coordinator.ReloadModelAsync().ConfigureAwait(true);
+                RefreshModels(fallback.Id);
+            }
+        }
+
         SelectedPageIndex = 2;
-        ActionMessage = "The local model was deleted. Install it again whenever you need it.";
+        ActionMessage = deletingActiveModel && Models.Any(model => model.IsActive)
+            ? "The model was deleted and RSTT switched to another installed model."
+            : "The local model was deleted. Install it again whenever you need it.";
     }
 
     private async Task RetryModelAsync()
@@ -716,6 +1141,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void ClearTranscript()
     {
+        _captionHistory.Reset();
+        CaptionSegments.Clear();
+        CurrentCaption = null;
         PreviewStableText = string.Empty;
         PreviewPendingText = string.Empty;
         ActionMessage = "Transcript preview cleared.";
@@ -745,8 +1173,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _captionFontSize = Math.Clamp(settings.CaptionFontSize, 18, 48);
         _captionOpacity = Math.Clamp(settings.CaptionOpacity, 0.45, 1);
         _captionWidth = Math.Clamp(settings.CaptionWidth, 520, 1_400);
+        _captionHeight = Math.Clamp(settings.CaptionHeight, 120, 720);
+        _captionLeft = settings.CaptionLeft;
+        _captionTop = settings.CaptionTop;
         _captionAlwaysOnTop = settings.CaptionAlwaysOnTop;
+        _captionPositionLocked = settings.CaptionPositionLocked;
+        _captionMaximumLines = Math.Clamp(settings.CaptionMaximumLines, 2, 8);
+        _captionLineSpacing = Math.Clamp(settings.CaptionLineSpacing, 1, 1.8);
+        _captionShowStatusIndicator = settings.CaptionShowStatusIndicator;
         _captionShowStableTextOnly = settings.CaptionShowStableTextOnly;
+        _computeBackend = settings.ComputeBackend;
+        _recognitionMode = settings.RecognitionMode;
+        _toggleListeningHotkey = settings.ToggleListeningHotkey;
+        _toggleInjectionHotkey = settings.ToggleInjectionHotkey;
+        _toggleCaptionsHotkey = settings.ToggleCaptionsHotkey;
         OnPropertyChanged(string.Empty);
     }
 
@@ -756,6 +1196,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         destination.SpeechEngine = source.SpeechEngine;
         destination.SpeechModel = source.SpeechModel;
         destination.Language = source.Language;
+        destination.ComputeBackend = source.ComputeBackend;
+        destination.RecognitionMode = source.RecognitionMode;
+        destination.CpuThreadLimit = source.CpuThreadLimit;
         destination.TextInjectionEnabled = source.TextInjectionEnabled;
         destination.CaptionOverlayEnabled = source.CaptionOverlayEnabled;
         destination.StartMinimized = source.StartMinimized;
@@ -764,16 +1207,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         destination.CaptionFontSize = source.CaptionFontSize;
         destination.CaptionOpacity = source.CaptionOpacity;
         destination.CaptionWidth = source.CaptionWidth;
+        destination.CaptionHeight = source.CaptionHeight;
+        destination.CaptionLeft = source.CaptionLeft;
+        destination.CaptionTop = source.CaptionTop;
         destination.CaptionAlwaysOnTop = source.CaptionAlwaysOnTop;
+        destination.CaptionPositionLocked = source.CaptionPositionLocked;
+        destination.CaptionMaximumLines = source.CaptionMaximumLines;
+        destination.CaptionLineSpacing = source.CaptionLineSpacing;
+        destination.CaptionShowStatusIndicator = source.CaptionShowStatusIndicator;
         destination.CaptionShowStableTextOnly = source.CaptionShowStableTextOnly;
         destination.ToggleListeningHotkey = source.ToggleListeningHotkey;
         destination.ToggleInjectionHotkey = source.ToggleInjectionHotkey;
         destination.ToggleCaptionsHotkey = source.ToggleCaptionsHotkey;
     }
 
-    private void RefreshModels()
+    private void RefreshModels(string? preferredModelId = null)
     {
-        var selectedId = _settings.Current.SpeechModel;
+        var selectedId = preferredModelId ?? SelectedModel?.Id ?? _settings.Current.SpeechModel;
         Models.Clear();
         foreach (var model in _modelManager.GetAvailableModels())
         {
@@ -781,6 +1231,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         SelectedModel = Models.FirstOrDefault(model => string.Equals(model.Id, selectedId, StringComparison.OrdinalIgnoreCase))
+            ?? Models.FirstOrDefault(model => model.IsActive)
             ?? Models.FirstOrDefault();
     }
 
@@ -805,6 +1256,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             PreviewStableText = update.StableText;
             PreviewPendingText = update.PendingText;
+            var captions = _captionHistory.Snapshot();
+            RefreshCaptionCollection(captions);
         });
     }
 
@@ -851,17 +1304,42 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void RaiseModelProperties()
     {
         OnPropertyChanged(nameof(IsModelReady));
+        OnPropertyChanged(nameof(ActiveModel));
         OnPropertyChanged(nameof(ShowOnboarding));
         OnPropertyChanged(nameof(ModelSizeText));
         OnPropertyChanged(nameof(ModelStatusText));
         OnPropertyChanged(nameof(ModelStatusGlyph));
         OnPropertyChanged(nameof(CanDeleteModel));
+        OnPropertyChanged(nameof(CanDownloadSelectedModel));
+        OnPropertyChanged(nameof(CanUseSelectedModel));
+        OnPropertyChanged(nameof(ModelIntegrationText));
+        OnPropertyChanged(nameof(ModelLicenseText));
+        OnPropertyChanged(nameof(ModelLanguagesText));
+        OnPropertyChanged(nameof(ModelBackendText));
         DownloadModelCommand.RaiseCanExecuteChanged();
+        UseModelCommand.RaiseCanExecuteChanged();
         CancelDownloadCommand.RaiseCanExecuteChanged();
         DeleteModelCommand.RaiseCanExecuteChanged();
         RetryModelCommand.RaiseCanExecuteChanged();
         StartStopCommand.RaiseCanExecuteChanged();
         TestAudioCommand.RaiseCanExecuteChanged();
+    }
+
+    private void RefreshCaptionCollection(
+        CaptionHistorySnapshot? snapshot = null)
+    {
+        var captions = snapshot ?? _captionHistory.Snapshot();
+        var current = captions.CurrentPartial;
+        var finalCapacity = Math.Max(
+            1,
+            CaptionMaximumLines - (current is null ? 0 : 1));
+        CaptionSegments.Clear();
+        foreach (var segment in captions.FinalSegments.TakeLast(finalCapacity))
+        {
+            CaptionSegments.Add(segment);
+        }
+
+        CurrentCaption = current;
     }
 
     private void PersistSettings()
@@ -876,6 +1354,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settingsSaveDebounce = new CancellationTokenSource();
         _ = PersistSettingsAsync(_settingsSaveDebounce.Token);
     }
+
+    private void OnTelemetryTick(object? sender, EventArgs eventArgs)
+    {
+        try
+        {
+            PerformanceSnapshot = _performance.GetSnapshot();
+        }
+        catch (ObjectDisposedException)
+        {
+            _telemetryTimer.Stop();
+        }
+    }
+
+    private static string FormatDuration(TimeSpan duration) =>
+        duration.TotalHours >= 1
+            ? $"{duration.TotalHours:N1} h"
+            : duration.TotalMinutes >= 1
+                ? $"{duration.TotalMinutes:N0} min"
+                : $"{Math.Max(1, duration.TotalSeconds):N0} s";
 
     private async Task PersistSettingsAsync(CancellationToken cancellationToken)
     {
@@ -914,6 +1411,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _disposed = true;
+        _telemetryTimer.Stop();
         _settingsSaveDebounce?.Cancel();
         _settingsSaveDebounce?.Dispose();
         _modelDownloadCancellation?.Cancel();

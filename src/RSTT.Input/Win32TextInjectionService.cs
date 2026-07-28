@@ -9,6 +9,7 @@ namespace RSTT.Input;
 /// <summary>Serializes Unicode SendInput calls and refuses to type into RSTT itself.</summary>
 public sealed partial class Win32TextInjectionService : ITextInjectionService, IDisposable
 {
+    private const int BatchCharacterCount = 16;
     private const uint InputKeyboard = 1;
     private const uint KeyEventFUnicode = 0x0004;
     private const uint KeyEventFKeyUp = 0x0002;
@@ -38,21 +39,30 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
             var target = GetForegroundWindow();
             if (target == IntPtr.Zero)
             {
-                return new TextInjectionResult(false, "No foreground window is available for text injection.");
+                return new TextInjectionResult(
+                    false,
+                    "No foreground window is available for text injection.",
+                    TextInjectionStatus.NoTarget);
             }
 
             if (GetWindowThreadProcessId(target, out var targetProcessId) == 0)
             {
-                return new TextInjectionResult(false, "The foreground window could not be identified.");
+                return new TextInjectionResult(
+                    false,
+                    "The foreground window could not be identified.",
+                    TextInjectionStatus.NoTarget);
             }
             if (targetProcessId == _currentProcessId)
             {
-                return new TextInjectionResult(false, "RSTT is focused, so text was not injected into its own window.");
+                return new TextInjectionResult(
+                    false,
+                    "RSTT is focused, so text was not injected into its own window.",
+                    TextInjectionStatus.SelfFocused);
             }
 
             var expectedInputCount = text.Length * 2;
             var sentInputCount = 0u;
-            foreach (var character in text)
+            for (var offset = 0; offset < text.Length; offset += BatchCharacterCount)
             {
                 var currentTarget = GetForegroundWindow();
                 if (currentTarget == IntPtr.Zero ||
@@ -61,10 +71,11 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                 {
                     const string message = "Text injection stopped because the foreground application changed.";
                     LogPartialSend(_logger, sentInputCount, expectedInputCount, targetProcessId, message);
-                    return new TextInjectionResult(false, message);
+                    return new TextInjectionResult(false, message, TextInjectionStatus.TargetChanged);
                 }
 
-                var inputs = CreateUnicodeInputs(character);
+                var characterCount = Math.Min(BatchCharacterCount, text.Length - offset);
+                var inputs = CreateUnicodeInputs(text.AsSpan(offset, characterCount));
                 var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
                 sentInputCount += sent;
                 if (sent != (uint)inputs.Length)
@@ -74,12 +85,18 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
                         ? "Text injection is unavailable for the elevated foreground application."
                         : new Win32Exception(error).Message;
                     LogPartialSend(_logger, sentInputCount, expectedInputCount, targetProcessId, message);
-                    return new TextInjectionResult(false, message);
+                    return new TextInjectionResult(
+                        false,
+                        message,
+                        error == 5 ? TextInjectionStatus.ElevatedTarget : TextInjectionStatus.Failed);
                 }
 
-                // Give WinUI text controls a chance to consume each VK_PACKET
-                // before the next Unicode pair reuses the native input buffer.
-                await Task.Delay(5, cancellationToken).ConfigureAwait(false);
+                // Keep target checks between batches without turning every UTF-16 code unit
+                // into a separate P/Invoke and scheduler delay.
+                if (offset + characterCount < text.Length)
+                {
+                    await Task.Delay(2, cancellationToken).ConfigureAwait(false);
+                }
             }
 
             LogInjectedText(_logger, text.Length, targetProcessId);
@@ -88,7 +105,10 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             LogInjectionFailure(_logger, exception);
-            return new TextInjectionResult(false, "Text injection failed. See local logs for details.");
+            return new TextInjectionResult(
+                false,
+                "Text injection failed. See local logs for details.",
+                TextInjectionStatus.Failed);
         }
         finally
         {
@@ -107,11 +127,19 @@ public sealed partial class Win32TextInjectionService : ITextInjectionService, I
         _injectionLock.Dispose();
     }
 
-    private static INPUT[] CreateUnicodeInputs(char character) =>
-    [
-        CreateInput(character, KeyEventFUnicode),
-        CreateInput(character, KeyEventFUnicode | KeyEventFKeyUp),
-    ];
+    private static INPUT[] CreateUnicodeInputs(ReadOnlySpan<char> characters)
+    {
+        var inputs = new INPUT[characters.Length * 2];
+        for (var index = 0; index < characters.Length; index++)
+        {
+            inputs[index * 2] = CreateInput(characters[index], KeyEventFUnicode);
+            inputs[(index * 2) + 1] = CreateInput(
+                characters[index],
+                KeyEventFUnicode | KeyEventFKeyUp);
+        }
+
+        return inputs;
+    }
 
     private static INPUT CreateInput(char character, uint flags) => new()
     {

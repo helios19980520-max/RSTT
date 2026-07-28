@@ -1,24 +1,161 @@
 <Window x:Class="RSTT.App.CaptionOverlayWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="{Binding CaptionWidth}" MinWidth="520" MaxWidth="1400"
-        MinHeight="84" SizeToContent="Height"
-        WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False"
-        AllowsTransparency="True" Background="Transparent"
-        Topmost="{Binding CaptionAlwaysOnTop}" Opacity="{Binding CaptionOpacity}"
-        ShowActivated="False" Focusable="False" WindowStartupLocation="Manual"
-        Left="510" Top="820">
-    <Border Margin="20" Padding="22,14" Background="#EB0C1521"
-            BorderBrush="#4C36556B" BorderThickness="1" CornerRadius="13" MaxWidth="1360">
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Width="{Binding CaptionWidth, Mode=OneWay}"
+        Height="{Binding CaptionHeight, Mode=OneWay}"
+        MinWidth="520"
+        MinHeight="120"
+        MaxWidth="1600"
+        MaxHeight="720"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="{Binding CaptionAlwaysOnTop}"
+        Opacity="{Binding CaptionOpacity}"
+        ShowActivated="False"
+        Focusable="False"
+        WindowStartupLocation="Manual"
+        MouseEnter="Window_MouseEnter"
+        MouseLeave="Window_MouseLeave">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibility" />
+    </Window.Resources>
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0"
+                            ResizeBorderThickness="8"
+                            CornerRadius="14"
+                            GlassFrameThickness="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Border x:Name="Surface"
+            Margin="8"
+            Background="#F20B1420"
+            BorderBrush="#703B566D"
+            BorderThickness="1"
+            CornerRadius="14">
         <Grid>
-            <Border Width="3" Background="#28D7C4" CornerRadius="2"
-                    HorizontalAlignment="Left" Margin="-11,2,0,2" />
-            <TextBlock Margin="6,0,0,0" FontSize="{Binding CaptionFontSize}"
-                       TextWrapping="Wrap" TextAlignment="Center" Foreground="White"
-                       FontFamily="Segoe UI Variable Text, Segoe UI" LineHeight="38">
-                <Run Text="{Binding OverlayStableText, Mode=OneWay}" />
-                <Run Text="{Binding OverlayPendingText, Mode=OneWay}" Foreground="#A7B8C8" />
-            </TextBlock>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Border x:Name="Toolbar"
+                    Padding="13,8"
+                    Background="#B5122131"
+                    CornerRadius="13,13,0,0"
+                    Opacity="0.18"
+                    MouseLeftButtonDown="Toolbar_MouseLeftButtonDown">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal"
+                                VerticalAlignment="Center">
+                        <Ellipse Width="7"
+                                 Height="7"
+                                 Margin="0,0,8,0"
+                                 Fill="#28D7C4"
+                                 Visibility="{Binding CaptionShowStatusIndicator, Converter={StaticResource BooleanToVisibility}}" />
+                        <TextBlock Text="{Binding StatusLabel}"
+                                   Foreground="#B9CBD8"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal">
+                        <Button Style="{x:Null}"
+                                Padding="8,2"
+                                Margin="0,0,4,0"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Foreground="#DDE8EF"
+                                ToolTip="Decrease caption size"
+                                Click="DecreaseFont_Click"
+                                Content="A−" />
+                        <Button Style="{x:Null}"
+                                Padding="8,2"
+                                Margin="0,0,4,0"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Foreground="#DDE8EF"
+                                ToolTip="Increase caption size"
+                                Click="IncreaseFont_Click"
+                                Content="A+" />
+                        <ToggleButton x:Name="LockButton"
+                                      IsChecked="{Binding CaptionPositionLocked, Mode=TwoWay}"
+                                      Padding="8,2"
+                                      Margin="0,0,4,0"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      Foreground="#DDE8EF"
+                                      ToolTip="Lock position"
+                                      Click="LockButton_Click">
+                            <TextBlock FontFamily="Segoe Fluent Icons"
+                                       Text="&#xE72E;" />
+                        </ToggleButton>
+                        <Button Style="{x:Null}"
+                                Padding="8,2"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Foreground="#DDE8EF"
+                                ToolTip="Close captions"
+                                Click="CloseCaptions_Click"
+                                Content="✕" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="1"
+                  Margin="20,10,20,17">
+                <ScrollViewer x:Name="CaptionScrollViewer"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              ScrollChanged="CaptionScrollViewer_ScrollChanged">
+                    <StackPanel>
+                        <ItemsControl ItemsSource="{Binding CaptionSegments}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Text}"
+                                               Margin="0,0,0,7"
+                                               Foreground="#F4F8FB"
+                                               FontFamily="Segoe UI Variable Text, Segoe UI"
+                                               FontSize="{Binding DataContext.CaptionFontSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                               LineHeight="{Binding DataContext.CaptionLineHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                               LineStackingStrategy="BlockLineHeight"
+                                               TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock Text="{Binding CurrentCaptionText}"
+                                   Foreground="#B8C8D4"
+                                   FontFamily="Segoe UI Variable Text, Segoe UI"
+                                   FontSize="{Binding CaptionFontSize}"
+                                   LineHeight="{Binding CaptionLineHeight}"
+                                   LineStackingStrategy="BlockLineHeight"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding HasCurrentCaption, Converter={StaticResource BooleanToVisibility}}" />
+                    </StackPanel>
+                </ScrollViewer>
+
+                <Button x:Name="JumpToLatestButton"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Bottom"
+                        Margin="0,0,0,2"
+                        Padding="13,6"
+                        Visibility="Collapsed"
+                        Background="#E51A3944"
+                        BorderBrush="#704EDAC8"
+                        Foreground="White"
+                        Click="JumpToLatest_Click"
+                        Content="↓  Jump to latest" />
+            </Grid>
+
         </Grid>
     </Border>
 </Window>

@@ -4,4 +4,6 @@ namespace RSTT.Core.Models;
 public sealed record AudioChunk(long SequenceNumber, DateTimeOffset CapturedAt, float[] Samples)
 {
     public const int SampleRate = 16_000;
+
+    public TimeSpan Duration => TimeSpan.FromSeconds(Samples.Length / (double)SampleRate);
 }

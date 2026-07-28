@@ -52,8 +52,15 @@ public partial class App : System.Windows.Application
         });
         services.AddSingleton<ISettingsService, JsonSettingsService>();
         services.AddSingleton<IApplicationStateService, ApplicationStateService>();
+        services.AddSingleton<IModelCatalog, JsonModelCatalog>();
+        services.AddSingleton<IPerformanceMonitor, PerformanceMonitor>();
+        services.AddSingleton<IComputeDeviceService, WindowsComputeDeviceService>();
         services.AddSingleton<TextFormattingPolicy>();
+        // Captions stay low-latency through CurrentCaptionText. Irreversible
+        // SendInput uses endpoint-final text by default to avoid partial revisions.
+        services.AddSingleton<ITranscriptCommitPolicy, FinalOnlyCommitPolicy>();
         services.AddSingleton<TranscriptStabilizer>();
+        services.AddSingleton<CaptionHistory>();
         services.AddSingleton<IAudioCaptureService, WasapiLoopbackAudioCaptureService>();
         services.AddSingleton<IModelManager, LocalModelManager>();
         services.AddSingleton<ISpeechRecognitionEngine, SherpaOnnxSpeechRecognitionEngine>();

@@ -16,6 +16,8 @@ public interface IModelManager
 
     Task SelectAsync(string modelId, CancellationToken cancellationToken = default);
 
+    Task SetDefaultAsync(string modelId, CancellationToken cancellationToken = default);
+
     Task DownloadAsync(
         string modelId,
         IProgress<ModelDownloadProgress>? progress = null,

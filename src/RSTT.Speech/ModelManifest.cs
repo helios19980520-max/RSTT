@@ -8,6 +8,8 @@ internal sealed class ModelManifest
 
     public string Engine { get; set; } = "online-transducer";
 
+    public string Revision { get; set; } = string.Empty;
+
     public Dictionary<string, string> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<string, long> FileSizes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -19,4 +21,6 @@ internal sealed class ModelManifest
     public string Provider { get; set; } = "cpu";
 
     public int FeatureDimension { get; set; } = 128;
+
+    public string RecognitionProfileId { get; set; } = string.Empty;
 }

@@ -5,4 +5,7 @@
     <PackageReference Include="org.k2fsa.sherpa.onnx" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\model-catalog.json" />
+  </ItemGroup>
 </Project>

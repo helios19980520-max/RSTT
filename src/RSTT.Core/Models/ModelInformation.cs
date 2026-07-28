@@ -11,4 +11,25 @@ public sealed record ModelInformation(
     string Description = "",
     string Latency = "",
     string Accuracy = "",
-    bool IsRecommended = false);
+    bool IsRecommended = false,
+    long InstalledSizeBytes = 0,
+    bool IsActive = false,
+    ModelDescriptor? Descriptor = null)
+{
+    public string DownloadSizeText => DownloadSizeBytes <= 0
+        ? "—"
+        : $"{DownloadSizeBytes / 1024d / 1024d:N0} MB";
+
+    public string IntegrationStatusText =>
+        Descriptor?.IntegrationStatus switch
+        {
+            ModelIntegrationStatus.Available => IsActive
+                ? "Active"
+                : IsInstalled
+                    ? "Installed"
+                    : "Available",
+            ModelIntegrationStatus.Experimental => "Experimental",
+            ModelIntegrationStatus.ComingLater => "Coming later",
+            _ => "Unknown",
+        };
+}

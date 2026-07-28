@@ -1,0 +1,345 @@
+[
+  {
+    "id": "NemotronStreamingEn06BInt8_560ms_20260425",
+    "displayName": "Nemotron Streaming English 0.6B",
+    "shortName": "Nemotron English",
+    "description": "Cache-aware English recognition that reuses encoder context instead of recomputing overlapping audio windows.",
+    "publisher": "NVIDIA · sherpa-onnx export",
+    "family": "Nemotron Speech Streaming",
+    "engine": "online-transducer",
+    "architecture": "Cache-Aware FastConformer RNNT",
+    "parameterCount": 600000000,
+    "languages": [ "en-US", "en-GB" ],
+    "languageDescription": "English",
+    "streamingMode": "NativeStreaming",
+    "latencyProfiles": [
+      {
+        "id": "balanced-560",
+        "displayName": "Balanced",
+        "chunkDurationMs": 560,
+        "lookaheadMs": 560,
+        "expectedLatencyMs": 560,
+        "isCacheAware": true,
+        "isBuffered": false,
+        "recommendedThreads": 1
+      }
+    ],
+    "downloadBytes": 661919574,
+    "installedBytes": 661919574,
+    "license": "NVIDIA Open Model License",
+    "licenseUrl": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+    "sourceUrl": "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b",
+    "documentationUrl": "https://k2-fsa.github.io/sherpa/onnx/nemo/nemotron-streaming.html",
+    "revision": "52056fdc070914a48dcd68b31b44d6a6f5b85902",
+    "cpuSupported": true,
+    "cudaSupported": true,
+    "otherBackends": [],
+    "recommendedRamBytes": 2147483648,
+    "recommendedVramBytes": 2147483648,
+    "capabilities": {
+      "supportsPunctuation": true,
+      "supportsCapitalization": true,
+      "supportsHotwords": false,
+      "supportsLanguageDetection": false,
+      "supportsWordTimestamps": false,
+      "supportsPartialResults": true
+    },
+    "accuracyTier": "Excellent",
+    "speedTier": "Fast",
+    "recommendedUse": "Recommended realtime English captions and typing",
+    "isRecommended": true,
+    "integrationStatus": "Available",
+    "featureDimension": 80,
+    "directoryName": "nemotron-streaming-en-0.6b-int8-560ms-20260425",
+    "artifacts": [
+      {
+        "key": "encoder",
+        "fileName": "encoder.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/encoder.int8.onnx",
+        "expectedBytes": 652916849,
+        "sha256": "7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8"
+      },
+      {
+        "key": "decoder",
+        "fileName": "decoder.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/decoder.int8.onnx",
+        "expectedBytes": 7257753,
+        "sha256": "0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98"
+      },
+      {
+        "key": "joiner",
+        "fileName": "joiner.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/joiner.int8.onnx",
+        "expectedBytes": 1735862,
+        "sha256": "a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23"
+      },
+      {
+        "key": "tokens",
+        "fileName": "tokens.txt",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/tokens.txt",
+        "expectedBytes": 8952,
+        "sha256": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"
+      },
+      {
+        "key": "readme",
+        "fileName": "README.md",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/resolve/52056fdc070914a48dcd68b31b44d6a6f5b85902/README.md",
+        "expectedBytes": 158,
+        "sha256": "ad40d7ecc09840a3c4a58d5c57db02e07b1bc30ccc3d8c982ef39072049daeeb",
+        "isRequired": false
+      }
+    ]
+  },
+  {
+    "id": "Nemotron35StreamingMultilingual06BInt8_560ms_20260611",
+    "displayName": "Nemotron 3.5 Streaming Multilingual 0.6B",
+    "shortName": "Nemotron 3.5 Multilingual",
+    "description": "Cache-aware streaming recognition with automatic or explicit language selection across supported language locales.",
+    "publisher": "NVIDIA · sherpa-onnx export",
+    "family": "Nemotron 3.5 ASR Streaming",
+    "engine": "online-transducer",
+    "architecture": "Cache-Aware FastConformer RNNT with language prompting",
+    "parameterCount": 600000000,
+    "languages": [ "auto", "en-US", "en-GB", "es-US", "es-ES", "fr-FR", "fr-CA", "it-IT", "pt-BR", "pt-PT", "nl-NL", "de-DE", "tr-TR", "ru-RU", "ar-AR", "hi-IN", "ja-JP", "ko-KR", "vi-VN", "uk-UA" ],
+    "languageDescription": "19 transcription-ready locales; additional broad-coverage locales are documented by NVIDIA",
+    "streamingMode": "NativeStreaming",
+    "latencyProfiles": [
+      {
+        "id": "balanced-560",
+        "displayName": "Balanced",
+        "chunkDurationMs": 560,
+        "lookaheadMs": 560,
+        "expectedLatencyMs": 560,
+        "isCacheAware": true,
+        "isBuffered": false,
+        "recommendedThreads": 1
+      }
+    ],
+    "downloadBytes": 682215570,
+    "installedBytes": 682215570,
+    "license": "OpenMDW 1.1",
+    "licenseUrl": "https://openmdw.ai/license-1-1/",
+    "sourceUrl": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
+    "documentationUrl": "https://k2-fsa.github.io/sherpa/onnx/nemo/nemotron-streaming.html",
+    "revision": "ab43d895f5985b1bbab8b6eac8607fcdc05343f3",
+    "cpuSupported": true,
+    "cudaSupported": true,
+    "otherBackends": [],
+    "recommendedRamBytes": 3221225472,
+    "recommendedVramBytes": 2147483648,
+    "capabilities": {
+      "supportsPunctuation": true,
+      "supportsCapitalization": true,
+      "supportsHotwords": false,
+      "supportsLanguageDetection": true,
+      "supportsWordTimestamps": false,
+      "supportsPartialResults": true
+    },
+    "accuracyTier": "Excellent",
+    "speedTier": "Fast",
+    "recommendedUse": "Realtime multilingual captions",
+    "isRecommended": false,
+    "integrationStatus": "Available",
+    "featureDimension": 80,
+    "directoryName": "nemotron-3.5-streaming-multilingual-0.6b-int8-560ms-20260611",
+    "artifacts": [
+      {
+        "key": "encoder",
+        "fileName": "encoder.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/ab43d895f5985b1bbab8b6eac8607fcdc05343f3/encoder.int8.onnx",
+        "expectedBytes": 657601403,
+        "sha256": "012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68"
+      },
+      {
+        "key": "decoder",
+        "fileName": "decoder.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/ab43d895f5985b1bbab8b6eac8607fcdc05343f3/decoder.int8.onnx",
+        "expectedBytes": 14978075,
+        "sha256": "19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0"
+      },
+      {
+        "key": "joiner",
+        "fileName": "joiner.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/ab43d895f5985b1bbab8b6eac8607fcdc05343f3/joiner.int8.onnx",
+        "expectedBytes": 9504438,
+        "sha256": "4101c7c679a0bc30483794b27a059e34e79232aa2068d78d51231a22c8b0d7ce"
+      },
+      {
+        "key": "tokens",
+        "fileName": "tokens.txt",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/ab43d895f5985b1bbab8b6eac8607fcdc05343f3/tokens.txt",
+        "expectedBytes": 131440,
+        "sha256": "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a"
+      },
+      {
+        "key": "readme",
+        "fileName": "README.md",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/ab43d895f5985b1bbab8b6eac8607fcdc05343f3/README.md",
+        "expectedBytes": 214,
+        "sha256": "4cec75ccd38f289f3bd39055bd7033bfcbaa145d38b85b31e3943b8f03ae86f1",
+        "isRequired": false
+      }
+    ]
+  },
+  {
+    "id": "ParakeetUnifiedEnInt8",
+    "displayName": "Parakeet Unified English 0.6B",
+    "shortName": "Parakeet Unified",
+    "description": "High-quality punctuated English recognition using buffered streaming. Accurate, but substantially more CPU-intensive than cache-aware Nemotron on this machine.",
+    "publisher": "NVIDIA · sherpa-onnx export",
+    "family": "Parakeet Unified",
+    "engine": "online-transducer",
+    "architecture": "Buffered FastConformer RNNT",
+    "parameterCount": 600000000,
+    "languages": [ "en-US", "en-GB" ],
+    "languageDescription": "English",
+    "streamingMode": "BufferedStreaming",
+    "latencyProfiles": [
+      {
+        "id": "accurate-1120",
+        "displayName": "Accurate",
+        "chunkDurationMs": 1120,
+        "lookaheadMs": 1120,
+        "expectedLatencyMs": 1120,
+        "isCacheAware": false,
+        "isBuffered": true,
+        "recommendedThreads": 2
+      }
+    ],
+    "downloadBytes": 663048980,
+    "installedBytes": 663048980,
+    "license": "NVIDIA Open Model License",
+    "licenseUrl": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+    "sourceUrl": "https://huggingface.co/nvidia/parakeet-unified-en-0.6b",
+    "documentationUrl": "https://k2-fsa.github.io/sherpa/onnx/nemo/index.html",
+    "revision": "615bf8c5ad39692dc96cf1105afde73ec3eb2a59",
+    "cpuSupported": true,
+    "cudaSupported": true,
+    "otherBackends": [],
+    "recommendedRamBytes": 3221225472,
+    "recommendedVramBytes": 2147483648,
+    "capabilities": {
+      "supportsPunctuation": true,
+      "supportsCapitalization": true,
+      "supportsHotwords": false,
+      "supportsLanguageDetection": false,
+      "supportsWordTimestamps": false,
+      "supportsPartialResults": true
+    },
+    "accuracyTier": "Excellent",
+    "speedTier": "Demanding",
+    "recommendedUse": "Accuracy-oriented English alternative",
+    "isRecommended": false,
+    "integrationStatus": "Available",
+    "featureDimension": 128,
+    "directoryName": "parakeet-unified-en-0.6b-int8-streaming-1120ms",
+    "artifacts": [
+      {
+        "key": "encoder",
+        "fileName": "encoder.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms/resolve/615bf8c5ad39692dc96cf1105afde73ec3eb2a59/encoder.int8.onnx",
+        "expectedBytes": 654046391,
+        "sha256": "1c03f1192de41771384af22972ca10203613ba56197a024f275b86727cd35911"
+      },
+      {
+        "key": "decoder",
+        "fileName": "decoder.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms/resolve/615bf8c5ad39692dc96cf1105afde73ec3eb2a59/decoder.int8.onnx",
+        "expectedBytes": 7257777,
+        "sha256": "34fea72425d2506600772ba191a6d3f99c0710abdb68d9a3dc89fa8cb2aa473a"
+      },
+      {
+        "key": "joiner",
+        "fileName": "joiner.int8.onnx",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms/resolve/615bf8c5ad39692dc96cf1105afde73ec3eb2a59/joiner.int8.onnx",
+        "expectedBytes": 1735860,
+        "sha256": "869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a"
+      },
+      {
+        "key": "tokens",
+        "fileName": "tokens.txt",
+        "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms/resolve/615bf8c5ad39692dc96cf1105afde73ec3eb2a59/tokens.txt",
+        "expectedBytes": 8952,
+        "sha256": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"
+      }
+    ]
+  },
+  {
+    "id": "Qwen3Asr06BInt8",
+    "displayName": "Qwen3-ASR 0.6B INT8",
+    "shortName": "Qwen3-ASR",
+    "description": "Planned multilingual accuracy engine. No activatable RSTT native integration is shipped yet.",
+    "publisher": "Qwen",
+    "family": "Qwen3-ASR",
+    "engine": "offline-qwen3-asr",
+    "architecture": "Offline encoder-decoder",
+    "parameterCount": 600000000,
+    "languages": [],
+    "languageDescription": "Multilingual",
+    "streamingMode": "Offline",
+    "latencyProfiles": [],
+    "downloadBytes": 0,
+    "installedBytes": 0,
+    "license": "See upstream model card",
+    "licenseUrl": "https://huggingface.co/Qwen",
+    "sourceUrl": "https://huggingface.co/Qwen",
+    "documentationUrl": "https://k2-fsa.github.io/sherpa/onnx/",
+    "revision": "",
+    "cpuSupported": false,
+    "cudaSupported": false,
+    "otherBackends": [],
+    "recommendedRamBytes": 0,
+    "recommendedVramBytes": 0,
+    "capabilities": {
+      "supportsPartialResults": false
+    },
+    "accuracyTier": "NotBenchmarked",
+    "speedTier": "NotBenchmarked",
+    "recommendedUse": "Future multilingual accuracy mode",
+    "isRecommended": false,
+    "integrationStatus": "ComingLater",
+    "featureDimension": 80,
+    "directoryName": "",
+    "artifacts": []
+  },
+  {
+    "id": "WhisperSmallNative",
+    "displayName": "Whisper Small",
+    "shortName": "Whisper Small",
+    "description": "Planned whisper.cpp compatibility engine. It is visible for roadmap clarity but cannot be downloaded or activated.",
+    "publisher": "OpenAI · planned whisper.cpp runtime",
+    "family": "Whisper",
+    "engine": "whisper-cpp",
+    "architecture": "Encoder-decoder",
+    "parameterCount": 244000000,
+    "languages": [],
+    "languageDescription": "Multilingual",
+    "streamingMode": "SegmentedVad",
+    "latencyProfiles": [],
+    "downloadBytes": 0,
+    "installedBytes": 0,
+    "license": "MIT model/code terms vary by artifact",
+    "licenseUrl": "https://github.com/openai/whisper",
+    "sourceUrl": "https://github.com/openai/whisper",
+    "documentationUrl": "https://github.com/ggerganov/whisper.cpp",
+    "revision": "",
+    "cpuSupported": false,
+    "cudaSupported": false,
+    "otherBackends": [],
+    "recommendedRamBytes": 0,
+    "recommendedVramBytes": 0,
+    "capabilities": {
+      "supportsLanguageDetection": true,
+      "supportsWordTimestamps": false,
+      "supportsPartialResults": false
+    },
+    "accuracyTier": "NotBenchmarked",
+    "speedTier": "NotBenchmarked",
+    "recommendedUse": "Future compatibility engine",
+    "isRecommended": false,
+    "integrationStatus": "ComingLater",
+    "featureDimension": 80,
+    "directoryName": "",
+    "artifacts": []
+  }
+]

@@ -1,3 +1,5 @@
+using RSTT.Core.Models;
+
 namespace RSTT.Core.Settings;
 
 public sealed class AppSettings
@@ -6,9 +8,15 @@ public sealed class AppSettings
 
     public string SpeechEngine { get; set; } = "SherpaOnnx";
 
-    public string SpeechModel { get; set; } = "ParakeetUnifiedEnInt8";
+    public string SpeechModel { get; set; } = "NemotronStreamingEn06BInt8_560ms_20260425";
 
     public string Language { get; set; } = "en";
+
+    public ComputeBackend ComputeBackend { get; set; } = ComputeBackend.Auto;
+
+    public RecognitionMode RecognitionMode { get; set; } = RecognitionMode.Balanced;
+
+    public int CpuThreadLimit { get; set; }
 
     public bool TextInjectionEnabled { get; set; } = true;
 
@@ -28,7 +36,21 @@ public sealed class AppSettings
 
     public double CaptionWidth { get; set; } = 900;
 
+    public double CaptionHeight { get; set; } = 210;
+
+    public double? CaptionLeft { get; set; }
+
+    public double? CaptionTop { get; set; }
+
     public bool CaptionAlwaysOnTop { get; set; } = true;
+
+    public bool CaptionPositionLocked { get; set; } = true;
+
+    public int CaptionMaximumLines { get; set; } = 4;
+
+    public double CaptionLineSpacing { get; set; } = 1.2;
+
+    public bool CaptionShowStatusIndicator { get; set; } = true;
 
     public bool CaptionShowStableTextOnly { get; set; }
 

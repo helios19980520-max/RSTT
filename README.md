@@ -1,116 +1,133 @@
 # RSTT
 
-**Real-Time Speech-to-Text for Windows**, created by Helios.
+**RSTT — Real-Time Speech-to-Text** is a local-first Windows desktop captioning and text-injection utility by Helios.
 
-RSTT captures audio playing through a selected Windows output device, transcribes English speech locally, shows live captions, and can type only confirmed text into the focused application.
+RSTT captures the selected Windows playback device with WASAPI loopback, recognizes speech locally with sherpa-onnx, displays a non-activating caption overlay, and can type finalized text into the focused application. Recognition does not require an account, API key, cloud speech service, analytics endpoint, or transcript upload.
 
-After the model has been installed, recognition is offline. RSTT has no account, API key, subscription, cloud speech API, analytics, or transcript upload.
+## Current capabilities
 
-## V1 capabilities
-
-- Windows 10/11 x64 WPF desktop application
-- WASAPI loopback capture from speakers, headphones, or another render device
-- Local CPU inference with sherpa-onnx and Parakeet Unified English
-- Live stable/pending captions and a non-activating caption overlay
-- Unicode text output to the focused application through Windows `SendInput`
-- Global hotkeys, system tray controls, audio metering, and device testing
-- Resumable in-app model download with exact-size and SHA-256 verification
-- Atomic JSON settings and privacy-safe rolling local logs
+- Windows 10/11 x64 WPF application on .NET 8
+- Input-driven, bounded WASAPI → resample → ASR pipeline
+- Cache-aware Nemotron Streaming English as the recommended realtime model
+- Available Nemotron 3.5 multilingual and Parakeet Unified alternatives
+- Resumable, verified in-app downloads with live progress, rate, and ETA
+- Automatic compute probing with honest CPU fallback
+- Movable, resizable, persistent, no-activate Caption V2 overlay
+- Real `RegisterHotKey` shortcuts with editable bindings and conflict reporting
+- Ordered, final-only Unicode `SendInput` delivery to the current foreground app
+- Local performance telemetry, stall diagnostics, and one controlled stream recovery
 
 ## Requirements
 
 - Windows 10 or Windows 11, x64
-- A working Windows output device
+- A working Windows playback device
+- Approximately 1.5 GB free for the app, one model, and download headroom
+- Internet access only when downloading a model
 - .NET 8 SDK only when building from source
-- About 1.5 GB of free disk space for the self-contained app, model download, and working headroom
-- Internet access once to install the model through RSTT
 
-RSTT intentionally runs as a normal user. Windows blocks normal applications from injecting input into many elevated Administrator windows; captions still work in that case.
+RSTT runs as a normal user. Windows UIPI can block a normal application from typing into elevated Administrator windows; captions remain available.
 
 ## Quick start
 
-From source:
-
 ```powershell
 dotnet restore RSTT.sln
-dotnet run --project src/RSTT.App/RSTT.App.csproj -c Release
+dotnet run --project src\RSTT.App\RSTT.App.csproj -c Release
 ```
 
 On first launch:
 
-1. Open **Models** and choose **Download & verify**.
-2. Keep RSTT open while the 663 MB (632 MiB) Parakeet model downloads.
-3. Select the output device that is playing speech on **Audio**.
-4. Use **Test audio** to confirm that the level meter moves.
-5. Return to **Dashboard** and select **Start listening**.
+1. Open **Models** and install a model. Nemotron Streaming English is the recommended default.
+2. Open **Audio**, choose the playback device carrying speech, and use **Test audio**.
+3. Return to **Dashboard** and choose **Start listening**.
+4. Enable captions and, if wanted, **Type stable text into the focused app**.
 
-Downloads can be cancelled and resumed. A model is not marked ready until every artifact passes its expected size and SHA-256 check and the final manifest is written.
+Downloads are resumable. RSTT does not mark a model ready until every required artifact passes exact-size and SHA-256 validation and the manifest is promoted into place.
 
-## Included model profile
+## Models
 
-V1 deliberately has one supported profile:
+| Model | Integration | Language | Streaming | Profile |
+| --- | --- | --- | --- | --- |
+| Nemotron Streaming English 0.6B INT8 | Available, recommended | English | Native/cache-aware | Balanced, 560 ms |
+| Nemotron 3.5 Streaming Multilingual 0.6B INT8 | Available | 19 transcription-ready locales | Native/cache-aware | Balanced, 560 ms |
+| Parakeet Unified English 0.6B INT8 | Available | English | Buffered | Accurate, 1120 ms |
+| Qwen3-ASR 0.6B INT8 | Coming later | Multilingual | Offline | Not activatable |
+| Whisper Small | Coming later | Multilingual | Planned segmented/VAD | Not activatable |
 
-| Profile | Engine | Language | Download | Buffered latency |
-| --- | --- | --- | ---: | ---: |
-| Parakeet Unified English, INT8 | sherpa-onnx online transducer, CPU | English | 663,048,980 bytes | approximately 1.12 s |
+“Coming later” entries have no download or activation command. Model cards distinguish integration status and do not claim unsupported capabilities. See [Model management](docs/MODELS.md) and the [verified model matrix](docs/MODEL_MATRIX.md).
 
-The model is downloaded on demand from the sherpa-onnx maintainer's converted model repository and remains external to the app. It is derived from NVIDIA Parakeet Unified English and is governed by the NVIDIA Open Model License. See [Model management](docs/MODELS.md) and [Third-party notices](THIRD_PARTY_NOTICES.md).
+## Compute backends
 
-## Audio and recognition behavior
+The standard RSTT package contains sherpa-onnx's CPU runtime. CPU therefore always works and is the verified backend in this build.
 
-RSTT listens to the selected **output**, not the microphone. The capture callback converts the device mix to mono 16 kHz floating-point samples, publishes a real level meter, and writes to a bounded in-memory channel. A background worker feeds sherpa-onnx. If decoding falls behind, audio is dropped instead of allowing delay and memory usage to grow without limit.
+RSTT detects NVIDIA hardware separately from runtime availability. A CUDA-capable model or an NVIDIA adapter does **not** make CUDA executable by itself. Auto selects CUDA only after a matching provider and its CUDA/cuDNN dependencies pass the runtime probe; otherwise it explains the reason and uses CPU. On the development machine, an RTX 2060 was detected but the installed package remained CPU-only, so all reported acceptance measurements are CPU results.
 
-Parakeet uses buffered streaming, so captions intentionally trail the audio by roughly the selected model context plus processing time. CPU speed, competing workloads, device format, speech clarity, noise, accent, and source quality affect latency and accuracy.
+See [Compute backends](docs/COMPUTE_BACKENDS.md) for packaging and fallback details.
 
-Raw audio is not written to disk. Full recognized conversations are not written to the application log.
+## Captions and typing
 
-## Captions, stability, and typing
+Caption V2 keeps bounded finalized segments plus one replaceable partial. It follows the latest caption until the user scrolls up, then offers **Jump to latest**. The overlay can be unlocked, dragged, resized, placed on another display, and restored after restart. Stored bounds are clamped to the current virtual desktop.
 
-ASR hypotheses can revise themselves as more audio arrives. RSTT keeps pending caption text visually separate, confirms only a stable prefix, and types each newly confirmed segment once. Enabling typing does not paste existing caption history.
+The overlay uses `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` and `ShowActivated=false`. Normal caption updates do not steal keyboard focus.
 
-The caption overlay uses `WS_EX_NOACTIVATE` and does not take focus. Text injection:
+Typing is intentionally conservative: the current production policy sends endpoint-final text only. Partial hypotheses remain live in captions but cannot create irreversible fragment errors in another application. Text is delivered in ordered UTF-16 batches, the target process is rechecked during each segment, and queued work is discarded when typing is disabled or the session generation changes.
 
-- targets the foreground application;
-- refuses to type into RSTT itself;
-- emits UTF-16 Unicode input without using the clipboard;
-- serializes and paces character delivery for Win32 and WinUI text controls; and
-- stops if the foreground process changes during a segment.
+See [Caption behavior](docs/CAPTIONS.md) and [Text injection](docs/TEXT_INJECTION.md).
 
-See [Text injection](docs/TEXT_INJECTION.md) for focus, UIPI, and security limitations.
+## Global shortcuts
 
-## Hotkeys
+Defaults:
 
-| Hotkey | Action |
+| Shortcut | Action |
 | --- | --- |
-| `Ctrl+Alt+R` | Start or stop listening |
-| `Ctrl+Alt+T` | Toggle typing into the focused app |
-| `Ctrl+Alt+C` | Toggle the caption overlay |
+| `Ctrl+Alt+R` | Start/stop listening |
+| `Ctrl+Alt+T` | Toggle text injection immediately |
+| `Ctrl+Alt+C` | Show/hide captions without stopping recognition |
 
-Windows may reject a hotkey if another application has already registered it. RSTT reports that condition and continues to work through the UI and tray menu.
+Shortcuts are editable in Settings. RSTT registers a replacement before releasing the old shortcut; a rejected or conflicting edit therefore cannot silently remove the working binding. Windows may already own a default combination—in that case RSTT reports the conflict and the user can enter another modifier-plus-key shortcut.
+
+See [Global hotkeys](docs/HOTKEYS.md).
+
+## Runtime architecture
+
+```text
+WASAPI callback
+  → bounded raw-packet channel
+  → one downmix/resample/meter worker
+  → bounded normalized-audio channel
+  → input-driven sherpa-onnx worker
+  → bounded ordered result channel
+  ├─ coalesced WPF/caption publication (20 Hz maximum for partials)
+  └─ bounded isolated SendInput worker
+```
+
+The WASAPI callback copies into pooled memory and returns; it does not resample, decode, log per packet, invoke WPF, or wait on downstream work. Queue depth and age are bounded. Stop/start creates a new generation and stale results are ignored.
+
+See [Architecture](docs/ARCHITECTURE.md) and [Performance](docs/PERFORMANCE.md).
+
+## Performance troubleshooting
+
+The recommended model should maintain realtime factor (RTF) below `1.0` on supported hardware. If RTF is above `1.0`:
+
+- use Nemotron Streaming English rather than buffered Parakeet;
+- choose the Fast/Balanced profile supported by the installed model;
+- leave the CPU thread limit on Auto unless profiling supports a change;
+- use a verified GPU package when one is actually available;
+- close competing CPU-heavy inference or media-processing workloads.
+
+Do not raise the whole process to Windows Realtime priority. Correct callback and queue design protects playback without risking system responsiveness.
+
+Operational diagnostics are in `%LOCALAPPDATA%\Helios\RSTT\Logs`. Logs include lifecycle, backend, model, queue, decode, and sanitized error data—not raw audio or complete transcript text.
 
 ## Local data
 
 | Data | Location |
 | --- | --- |
 | Settings | `%LOCALAPPDATA%\Helios\RSTT\settings.json` |
-| Model | `%LOCALAPPDATA%\Helios\RSTT\Models\parakeet-unified-en-0.6b-int8-streaming-1120ms` |
+| Models | `%LOCALAPPDATA%\Helios\RSTT\Models` |
+| Resumable staging | `%LOCALAPPDATA%\Helios\RSTT\Models\.downloads` |
 | Logs | `%LOCALAPPDATA%\Helios\RSTT\Logs` |
 
-Deleting the model in RSTT removes only its managed model directory. Settings and logs remain.
-
-## Project layout
-
-```text
-src/RSTT.App             WPF shell, overlay, tray, hotkeys, orchestration
-src/RSTT.Core            Contracts, settings, state, transcript stability
-src/RSTT.Audio           WASAPI loopback, PCM conversion, level metering
-src/RSTT.Speech          Model manager and sherpa-onnx recognition engine
-src/RSTT.Input           Foreground checks and Unicode SendInput
-src/RSTT.Infrastructure  App paths, atomic JSON settings, local logging
-tests/                   Unit and live Windows integration tests
-```
-
-Read [Architecture](docs/ARCHITECTURE.md) for pipeline and lifecycle details.
+Model artifacts are not bundled in the repository or publish output.
 
 ## Build, test, and publish
 
@@ -118,23 +135,19 @@ Read [Architecture](docs/ARCHITECTURE.md) for pipeline and lifecycle details.
 dotnet restore RSTT.sln
 dotnet build RSTT.sln -c Release --no-restore
 dotnet test RSTT.sln -c Release --no-restore
-dotnet publish src/RSTT.App/RSTT.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts\publish\win-x64-verified
+dotnet publish src\RSTT.App\RSTT.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts\publish\win-x64-hardened
 ```
 
-The publish is self-contained and multi-file. The executable is `artifacts\publish\win-x64-verified\RSTT.App.exe`. The model is never included in publish output.
+The publish is self-contained and multi-file. Its entry point is:
 
-The Windows integration tests use the active output device and open an isolated temporary document in Notepad. Close visible Notepad windows first. The fixture refuses to send input if an elevated or always-on-top application prevents its temporary editor from becoming the real foreground target.
+```text
+artifacts\publish\win-x64-hardened\RSTT.App.exe
+```
 
-## Troubleshooting
+The Windows text-injection integration fixture is non-destructive: if an unrelated user-owned Notepad process is already open, the fixture does not close it or type into it.
 
-- **No meter movement:** select the render device that is actually playing audio. Bluetooth/headphone changes can create a different endpoint; stop and restart listening after changing devices.
-- **Model unavailable:** open **Models**, resume or retry the download, and keep enough disk space available. RSTT rejects incomplete files and same-size files with an unexpected SHA-256 during installation.
-- **Captions lag:** Parakeet's configured buffered latency is about 1.12 seconds before CPU decoding overhead. Reduce other CPU-heavy work.
-- **No typed text:** enable **Type into focused app**, focus an editable control, and keep the destination focused while a stable segment is emitted.
-- **Administrator target:** run both applications at the same integrity level or use captions only. RSTT does not bypass UIPI.
-- **Protected or silent playback:** some protected content or device/driver combinations may not expose samples through loopback.
-- **Diagnostics:** inspect `%LOCALAPPDATA%\Helios\RSTT\Logs`. Logs contain operational metadata, not raw audio or complete transcripts.
+## Privacy and licensing
 
-## Licence
+Raw audio is transient and is never written to disk. Session transcript history is bounded in memory and is not saved automatically. Internet access is limited to explicit model installation.
 
-RSTT source code is licensed under the [MIT License](LICENSE). Dependencies and the separately downloaded model have their own terms listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+RSTT source is licensed under the [MIT License](LICENSE). Dependencies and separately downloaded models retain their own terms; see [Third-party notices](THIRD_PARTY_NOTICES.md).
