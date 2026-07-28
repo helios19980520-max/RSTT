@@ -36,51 +36,41 @@ internal sealed class Pcm16kMonoConverter
             return [];
         }
 
-        var mono = new float[frameCount];
-        for (var frame = 0; frame < frameCount; frame++)
-        {
-            var channelSum = 0f;
-            for (var channel = 0; channel < format.Channels; channel++)
-            {
-                var sampleOffset = (frame * format.BlockAlign) + (channel * (format.BitsPerSample / 8));
-                channelSum += ReadSample(buffer, sampleOffset, format);
-            }
-
-            mono[frame] = Math.Clamp(channelSum / format.Channels, -1f, 1f);
-        }
-
         var startSourceIndex = _sourceFramesProcessed - (_hasLastSample ? 1 : 0);
-        var source = new float[mono.Length + (_hasLastSample ? 1 : 0)];
-        if (_hasLastSample)
-        {
-            source[0] = _lastSample;
-            Array.Copy(mono, 0, source, 1, mono.Length);
-        }
-        else
-        {
-            Array.Copy(mono, source, mono.Length);
-        }
-
         var endSourceIndex = _sourceFramesProcessed + frameCount;
-        var samples = new List<float>((int)Math.Ceiling(frameCount * (double)TargetSampleRate / format.SampleRate));
-        while (_nextOutputSourcePosition < endSourceIndex - 1)
+        var sourceStep = (double)format.SampleRate / TargetSampleRate;
+        var remainingSourceFrames = (endSourceIndex - 1) - _nextOutputSourcePosition;
+        var outputCount = remainingSourceFrames <= 0
+            ? 0
+            : (int)Math.Ceiling(remainingSourceFrames / sourceStep);
+        var samples = new float[outputCount];
+        var outputIndex = 0;
+        while (outputIndex < samples.Length && _nextOutputSourcePosition < endSourceIndex - 1)
         {
             var localPosition = _nextOutputSourcePosition - startSourceIndex;
             var lowerIndex = (int)Math.Floor(localPosition);
-            if (lowerIndex < 0 || lowerIndex + 1 >= source.Length)
+            var sourceLength = frameCount + (_hasLastSample ? 1 : 0);
+            if (lowerIndex < 0 || lowerIndex + 1 >= sourceLength)
             {
                 break;
             }
 
             var fraction = (float)(localPosition - lowerIndex);
-            samples.Add(source[lowerIndex] + ((source[lowerIndex + 1] - source[lowerIndex]) * fraction));
-            _nextOutputSourcePosition += (double)format.SampleRate / TargetSampleRate;
+            var lower = ReadMonoFrame(buffer, lowerIndex, format);
+            var upper = ReadMonoFrame(buffer, lowerIndex + 1, format);
+            samples[outputIndex++] = lower + ((upper - lower) * fraction);
+            _nextOutputSourcePosition += sourceStep;
+        }
+
+        if (outputIndex != samples.Length)
+        {
+            Array.Resize(ref samples, outputIndex);
         }
 
         _sourceFramesProcessed = endSourceIndex;
-        _lastSample = mono[^1];
+        _lastSample = ReadMonoFrame(buffer, frameCount - 1 + (_hasLastSample ? 1 : 0), format);
         _hasLastSample = true;
-        return samples.ToArray();
+        return samples;
     }
 
     private void Reset(int sampleRate, int channels)
@@ -106,6 +96,25 @@ internal sealed class Pcm16kMonoConverter
             32 => BitConverter.ToInt32(buffer, offset) / 2_147_483_648f,
             _ => throw new NotSupportedException($"Unsupported capture format: {format.Encoding} {format.BitsPerSample}-bit."),
         };
+    }
+
+    private float ReadMonoFrame(byte[] buffer, int combinedFrameIndex, WaveFormat format)
+    {
+        if (_hasLastSample && combinedFrameIndex == 0)
+        {
+            return _lastSample;
+        }
+
+        var frameIndex = combinedFrameIndex - (_hasLastSample ? 1 : 0);
+        var channelSum = 0f;
+        var bytesPerSample = format.BitsPerSample / 8;
+        for (var channel = 0; channel < format.Channels; channel++)
+        {
+            var sampleOffset = (frameIndex * format.BlockAlign) + (channel * bytesPerSample);
+            channelSum += ReadSample(buffer, sampleOffset, format);
+        }
+
+        return Math.Clamp(channelSum / format.Channels, -1f, 1f);
     }
 
     private static int Read24BitPcm(byte[] buffer, int offset)

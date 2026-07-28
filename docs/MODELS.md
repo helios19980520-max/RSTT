@@ -1,85 +1,62 @@
 # Model management
 
-RSTT V1 supports one curated model: **Parakeet Unified English, INT8, buffered streaming at approximately 1.12 seconds**. The application downloads and manages it; users do not create a manifest by hand.
+RSTT uses an embedded, versioned ASR catalog. Catalog metadata is available offline; model payloads are downloaded only after an explicit user action.
 
-## Why this profile
+## Integration states
 
-Parakeet Unified English is a 600M-parameter FastConformer RNN-T trained for both offline and streaming English recognition, with punctuation and capitalization. The 1.12-second converted profile provides a practical accuracy/latency tradeoff for CPU-based desktop captions. sherpa-onnx 1.13.4 selects the buffered RNN-T path automatically from the exported ONNX metadata.
+- **Available** — the engine path, artifacts, validation, load, and activation are implemented.
+- **Experimental** — executable integration exists but has stated limitations.
+- **Coming later** — roadmap metadata only. No download or activation command is exposed.
 
-The model is English-only. V1 does not expose alternative models or languages that have not been integrated and verified through the same managed lifecycle.
+The current catalog has three Available sherpa-onnx models and two non-activatable roadmap entries. See [MODEL_MATRIX.md](MODEL_MATRIX.md).
 
-## Install through RSTT
+## Recommended default
 
-1. Open **Models**.
-2. Select **Download & verify**.
-3. Leave RSTT running until the state reaches **Ready**.
+**Nemotron Streaming English 0.6B INT8, 560 ms** is the default English realtime model. On the test machine it reduced continuous-speech CPU from 44.86% with the original four-thread buffered Parakeet configuration to 1.88% average while keeping RTF below 1. It is cache-aware, so it reuses encoder context rather than repeatedly recomputing a large overlapping window.
 
-The total model payload is 663,048,980 bytes (about 632 MiB). The installation directory is:
+Parakeet remains an installed/available accuracy-oriented English alternative. Nemotron 3.5 is the available multilingual native-streaming option.
+
+## Install lifecycle
+
+1. RSTT checks free space for remaining payload plus working headroom.
+2. Each artifact downloads to `Models\.downloads\<model-id>\<file>.partial`.
+3. A valid partial is resumed with HTTP Range; an invalid range response restarts safely.
+4. Progress includes current file, file count, bytes, total, rate, ETA, percentage, and state.
+5. Exact length and SHA-256 are verified.
+6. A generated `model.json` manifest is written only after required files pass.
+7. The staging directory is promoted into the versioned installation directory.
+8. Settings activate the model only after promotion succeeds.
+
+Cancellation leaves valid partial data for resume. A failed validation never appears as Ready.
+
+## Integrity contract
+
+The embedded catalog pins:
+
+- a versioned model ID and directory;
+- upstream/export revision;
+- artifact URL;
+- safe local file name;
+- exact byte count; and
+- SHA-256 of the delivered file.
+
+Hugging Face/Xet ETags are not treated as file SHA-256 values. Startup validation checks model identity, manifest completeness, required roles, safe paths, file existence, and exact sizes. The install path cannot escape the managed model root.
+
+## Activation and deletion
+
+Selecting **Use model** stops active recognition first through the normal session lifecycle, resets stabilizer state, loads the chosen verified model, and updates the default only after load succeeds. The UI does not replace native resources underneath an active decode call.
+
+Deleting an active model unloads it first. RSTT selects another valid installed model when possible; otherwise the shell remains usable on the Models page. The confirmation includes the model name and storage size.
+
+## Local paths
 
 ```text
-%LOCALAPPDATA%\Helios\RSTT\Models\parakeet-unified-en-0.6b-int8-streaming-1120ms
+%LOCALAPPDATA%\Helios\RSTT\Models\<versioned-model-directory>
+%LOCALAPPDATA%\Helios\RSTT\Models\.downloads\<model-id>
 ```
 
-Cancel leaves resumable `.partial` data. Starting again requests the remaining bytes when the server supports HTTP Range. Delete removes the managed model directory and unloads the recognizer.
+The publish output never includes model payloads.
 
-## Artifact contract
+## Licensing
 
-| Role | File | Bytes | SHA-256 |
-| --- | --- | ---: | --- |
-| Encoder | `encoder.int8.onnx` | 654,046,391 | `1c03f1192de41771384af22972ca10203613ba56197a024f275b86727cd35911` |
-| Decoder | `decoder.int8.onnx` | 7,257,777 | `34fea72425d2506600772ba191a6d3f99c0710abdb68d9a3dc89fa8cb2aa473a` |
-| Joiner | `joiner.int8.onnx` | 1,735,860 | `869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a` |
-| Tokens | `tokens.txt` | 8,952 | `dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff` |
-
-These SHA-256 values are calculated over the reconstructed downloaded files. They are intentionally not copied from Hugging Face Xet/CDN ETags, which identify storage objects and are not guaranteed to equal the delivered file hash.
-
-Downloads originate from:
-
-```text
-https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms
-```
-
-This is a sherpa-onnx maintainer export of [NVIDIA Parakeet Unified English](https://huggingface.co/nvidia/parakeet-unified-en-0.6b).
-
-## Integrity and recovery
-
-Each artifact downloads to `filename.partial`. RSTT verifies its exact byte length and SHA-256 before replacing the final file. `model.json` is generated last, so an interrupted install cannot appear ready.
-
-At startup, RSTT checks:
-
-- the expected model identity;
-- a complete manifest;
-- paths that stay inside the managed model directory;
-- all required artifacts; and
-- exact file lengths.
-
-If validation fails, recognition stays disabled and the Models page remains available for retry or delete/reinstall. RSTT never falls back to an online recognizer.
-
-## Generated manifest
-
-A completed installation contains a generated manifest similar to:
-
-```json
-{
-  "id": "ParakeetUnifiedEnInt8",
-  "displayName": "Parakeet Unified English",
-  "engine": "online-transducer",
-  "files": {
-    "encoder": "encoder.int8.onnx",
-    "decoder": "decoder.int8.onnx",
-    "joiner": "joiner.int8.onnx",
-    "tokens": "tokens.txt"
-  },
-  "numThreads": 4,
-  "provider": "cpu",
-  "featureDimension": 128
-}
-```
-
-Thread count is derived from the machine and clamped to 1–4. V1 uses CPU inference; no CUDA runtime is required.
-
-## Offline and privacy boundary
-
-Internet access is used only for the explicit model installation. After a verified install, model load and recognition read local files and do not call Hugging Face, NVIDIA, or a transcription service.
-
-The model is not bundled with source or publish output. Review the model terms in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) before redistribution.
+Each model card/detail view reports the catalog's actual license label and upstream link. “Free” is not used as a substitute for license terms. Users and redistributors should review [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and the linked upstream license before distribution.

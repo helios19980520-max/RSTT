@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using RSTT.Core.Abstractions;
 using RSTT.Infrastructure;
+using RSTT.Speech;
 using Xunit;
 
 namespace RSTT.Speech.Tests;
@@ -49,7 +50,7 @@ public sealed class JsonSettingsServiceTests
 
             await service.LoadAsync();
 
-            Assert.Equal("ParakeetUnifiedEnInt8", service.Current.SpeechModel);
+            Assert.Equal(LocalModelManager.DefaultModelId, service.Current.SpeechModel);
             Assert.True(service.Current.TextInjectionEnabled);
         }
         finally

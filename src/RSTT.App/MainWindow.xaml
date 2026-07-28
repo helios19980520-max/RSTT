@@ -230,7 +230,7 @@
                                     <Border Grid.Column="2" Style="{StaticResource Card}">
                                         <StackPanel>
                                             <TextBlock Text="LOCAL MODEL" Style="{StaticResource Eyebrow}" />
-                                            <TextBlock Text="{Binding SelectedModel.DisplayName, TargetNullValue=Not installed}"
+                                            <TextBlock Text="{Binding ActiveModel.DisplayName, TargetNullValue=Not installed}"
                                                        FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,9,0,0" />
                                             <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                                                 <TextBlock Text="{Binding ModelStatusGlyph}" FontFamily="Segoe Fluent Icons"
@@ -265,13 +265,14 @@
                                             <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedBody}" Margin="0,5,0,0" />
                                             <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                                                 <Border Background="#152D40" CornerRadius="7" Padding="9,5">
-                                                    <TextBlock Text="Ctrl + Alt + R" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
+                                                    <TextBlock Text="{Binding ToggleListeningHotkey}" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
                                                 </Border>
                                                 <TextBlock Text=" toggles listening from any app" VerticalAlignment="Center"
                                                            Foreground="{StaticResource MutedText}" FontSize="12" />
                                             </StackPanel>
                                         </StackPanel>
                                         <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Command="{Binding StartStopCommand}"
+                                                AutomationProperties.Name="{Binding StartStopText}"
                                                 MinWidth="184" MinHeight="58" Margin="24,0,0,0">
                                             <StackPanel Orientation="Horizontal">
                                                 <TextBlock Text="{Binding StartStopGlyph}" FontFamily="Segoe Fluent Icons" FontSize="17" Margin="0,0,10,0" />
@@ -422,6 +423,95 @@
                                     </Grid>
                                 </Border>
 
+                                <ListBox ItemsSource="{Binding Models}"
+                                         SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                                         Margin="0,16,0,0"
+                                         Height="152"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Margin" Value="0,0,12,0" />
+                                            <Setter Property="Padding" Value="0" />
+                                            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border x:Name="ModelCard"
+                                                                Width="260"
+                                                                Height="132"
+                                                                Padding="16"
+                                                                Background="{StaticResource PanelBackground}"
+                                                                BorderBrush="{StaticResource BorderBrush}"
+                                                                BorderThickness="1"
+                                                                CornerRadius="12">
+                                                            <ContentPresenter />
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="ModelCard" Property="BorderBrush" Value="#47647D" />
+                                                            </Trigger>
+                                                            <Trigger Property="IsSelected" Value="True">
+                                                                <Setter TargetName="ModelCard" Property="Background" Value="#112D32" />
+                                                                <Setter TargetName="ModelCard" Property="BorderBrush" Value="{StaticResource Accent}" />
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid>
+                                                    <TextBlock Text="{Binding DisplayName}"
+                                                               FontWeight="SemiBold"
+                                                               FontSize="14"
+                                                               MaxWidth="190"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <Ellipse Width="7"
+                                                             Height="7"
+                                                             HorizontalAlignment="Right"
+                                                             Fill="{StaticResource Accent}"
+                                                             Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}"
+                                                             ToolTip="Active model" />
+                                                </Grid>
+                                                <TextBlock Grid.Row="1"
+                                                           Text="{Binding Description}"
+                                                           Style="{StaticResource MutedBody}"
+                                                           FontSize="11"
+                                                           LineHeight="16"
+                                                           Margin="0,8,0,8"
+                                                           MaxHeight="34"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <Grid Grid.Row="2">
+                                                    <TextBlock Text="{Binding IntegrationStatusText}"
+                                                               Foreground="{StaticResource Cyan}"
+                                                               FontSize="10"
+                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding DownloadSizeText}"
+                                                               HorizontalAlignment="Right"
+                                                               Foreground="{StaticResource MutedText}"
+                                                               FontSize="10" />
+                                                </Grid>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
                                 <Border Style="{StaticResource Card}" Margin="0,16,0,0" Padding="0">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -431,17 +521,19 @@
                                         <Border Background="{StaticResource Accent}" CornerRadius="14,0,0,14" />
                                         <Grid Grid.Column="1" Margin="23">
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
+                                                 <RowDefinition Height="Auto" />
+                                                 <RowDefinition Height="Auto" />
+                                                 <RowDefinition Height="Auto" />
+                                                 <RowDefinition Height="Auto" />
+                                                 <RowDefinition Height="Auto" />
+                                             </Grid.RowDefinitions>
                                             <Grid>
                                                 <StackPanel>
                                                     <StackPanel Orientation="Horizontal">
                                                         <TextBlock Text="{Binding SelectedModel.DisplayName}" FontSize="20" FontWeight="SemiBold" />
-                                                        <Border Background="#173A37" BorderBrush="#286D64" BorderThickness="1"
-                                                                CornerRadius="9" Padding="8,3" Margin="11,0,0,0">
+                                                         <Border Background="#173A37" BorderBrush="#286D64" BorderThickness="1"
+                                                                CornerRadius="9" Padding="8,3" Margin="11,0,0,0"
+                                                                Visibility="{Binding SelectedModel.IsRecommended, Converter={StaticResource BoolToVisibility}}">
                                                             <TextBlock Text="RECOMMENDED" Foreground="{StaticResource Accent}" FontSize="9" FontWeight="Bold" />
                                                         </Border>
                                                     </StackPanel>
@@ -449,7 +541,7 @@
                                                                MaxWidth="650" Margin="0,7,0,0" />
                                                 </StackPanel>
                                                 <StackPanel HorizontalAlignment="Right">
-                                                    <TextBlock Text="{Binding ModelStatusText}" FontWeight="SemiBold" HorizontalAlignment="Right" />
+                                                    <TextBlock Text="{Binding ModelIntegrationText}" FontWeight="SemiBold" HorizontalAlignment="Right" />
                                                     <TextBlock Text="{Binding ModelSizeText}" Style="{StaticResource MutedBody}" FontSize="11"
                                                                HorizontalAlignment="Right" Margin="0,3,0,0" />
                                                 </StackPanel>
@@ -471,11 +563,32 @@
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="2">
                                                     <TextBlock Text="RUNTIME" Style="{StaticResource Eyebrow}" />
-                                                    <TextBlock Text="CPU · int8" FontWeight="SemiBold" Margin="0,5,0,0" />
+                                                    <TextBlock Text="{Binding ModelBackendText}" FontWeight="SemiBold" Margin="0,5,0,0" />
                                                 </StackPanel>
                                             </Grid>
 
-                                            <StackPanel Grid.Row="2" Margin="0,22,0,0"
+                                            <Grid Grid.Row="2" Margin="0,18,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="1*" />
+                                                    <ColumnDefinition Width="1*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="LANGUAGES" Style="{StaticResource Eyebrow}" />
+                                                    <TextBlock Text="{Binding ModelLanguagesText}"
+                                                               Foreground="{StaticResource MutedText}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,5,16,0" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="LICENSE" Style="{StaticResource Eyebrow}" />
+                                                    <TextBlock Text="{Binding ModelLicenseText}"
+                                                               Foreground="{StaticResource MutedText}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,5,0,0" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <StackPanel Grid.Row="3" Margin="0,22,0,0"
                                                         Visibility="{Binding IsDownloadingModel, Converter={StaticResource BoolToVisibility}}">
                                                 <Grid>
                                                     <TextBlock Text="{Binding DownloadProgressText}" Foreground="{StaticResource MutedText}" FontSize="12" />
@@ -485,15 +598,13 @@
                                                 <ProgressBar Value="{Binding DownloadProgress, Mode=OneWay}" Maximum="100" Margin="0,8,0,0" />
                                             </StackPanel>
 
-                                            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,22,0,0">
-                                                <Button Command="{Binding DownloadModelCommand}">
+                                            <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,22,0,0">
+                                                <Button Command="{Binding DownloadModelCommand}"
+                                                        AutomationProperties.Name="Download and verify selected model"
+                                                        Visibility="{Binding CanDownloadSelectedModel, Converter={StaticResource BoolToVisibility}}">
                                                     <Button.Style>
                                                         <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-                                                            <Setter Property="Visibility" Value="Visible" />
                                                             <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsModelReady}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                                </DataTrigger>
                                                                 <DataTrigger Binding="{Binding IsDownloadingModel}" Value="True">
                                                                     <Setter Property="Visibility" Value="Collapsed" />
                                                                 </DataTrigger>
@@ -505,7 +616,15 @@
                                                         <TextBlock Text="Download &amp; verify" />
                                                     </StackPanel>
                                                 </Button>
-                                                <Button Command="{Binding CancelDownloadCommand}" Margin="0">
+                                                <Button Style="{StaticResource PrimaryButton}"
+                                                        Command="{Binding UseModelCommand}"
+                                                        AutomationProperties.Name="Use selected model"
+                                                        Margin="0"
+                                                        Visibility="{Binding CanUseSelectedModel, Converter={StaticResource BoolToVisibility}}"
+                                                        Content="Use model" />
+                                                <Button Command="{Binding CancelDownloadCommand}"
+                                                        AutomationProperties.Name="Pause model download"
+                                                        Margin="0">
                                                     <Button.Style>
                                                         <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
                                                             <Setter Property="Visibility" Value="Collapsed" />
@@ -597,6 +716,12 @@
                                                        Foreground="{StaticResource Accent}" />
                                         </Grid>
                                         <Slider Minimum="520" Maximum="1400" Value="{Binding CaptionWidth}" Margin="0,15,0,0" />
+                                        <Grid Margin="0,20,0,0">
+                                            <TextBlock Text="Overlay height" Style="{StaticResource SectionTitle}" />
+                                            <TextBlock Text="{Binding CaptionHeight, StringFormat={}{0:N0} px}" HorizontalAlignment="Right"
+                                                       Foreground="{StaticResource Accent}" />
+                                        </Grid>
+                                        <Slider Minimum="120" Maximum="720" Value="{Binding CaptionHeight}" Margin="0,15,0,0" />
                                     </StackPanel>
                                 </Border>
 
@@ -608,6 +733,23 @@
                                         <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding CaptionShowStableTextOnly}" Margin="0,18,0,0">
                                             <TextBlock Text="Show stable text only" FontWeight="SemiBold" />
                                         </CheckBox>
+                                        <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding CaptionPositionLocked}" Margin="0,18,0,0">
+                                            <StackPanel>
+                                                <TextBlock Text="Lock overlay position" FontWeight="SemiBold" />
+                                                <TextBlock Text="Unlock to drag or resize the caption surface." Style="{StaticResource MutedBody}" FontSize="11" />
+                                            </StackPanel>
+                                        </CheckBox>
+                                        <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding CaptionShowStatusIndicator}" Margin="0,18,0,0">
+                                            <TextBlock Text="Show listening status in the overlay" FontWeight="SemiBold" />
+                                        </CheckBox>
+                                        <Grid Margin="0,20,0,0">
+                                            <TextBlock Text="Visible caption lines" Style="{StaticResource SectionTitle}" />
+                                            <TextBlock Text="{Binding CaptionMaximumLines}" HorizontalAlignment="Right"
+                                                       Foreground="{StaticResource Accent}" />
+                                        </Grid>
+                                        <Slider Minimum="2" Maximum="8" TickFrequency="1"
+                                                IsSnapToTickEnabled="True"
+                                                Value="{Binding CaptionMaximumLines}" Margin="0,12,0,0" />
                                     </StackPanel>
                                 </Border>
 
@@ -655,6 +797,39 @@
 
                                 <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                                     <StackPanel>
+                                        <TextBlock Text="Recognition compute" Style="{StaticResource SectionTitle}" />
+                                        <Grid Margin="0,16,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="1*" />
+                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="1*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="Backend" Style="{StaticResource Eyebrow}" />
+                                                <ComboBox ItemsSource="{Binding ComputeBackends}"
+                                                          SelectedItem="{Binding ComputeBackend}"
+                                                          Margin="0,7,0,0" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="Profile" Style="{StaticResource Eyebrow}" />
+                                                <ComboBox ItemsSource="{Binding RecognitionModes}"
+                                                          SelectedItem="{Binding RecognitionMode}"
+                                                          Margin="0,7,0,0" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock Text="{Binding ComputeStatus}"
+                                                   Style="{StaticResource MutedBody}"
+                                                   FontSize="11"
+                                                   Margin="0,13,0,0" />
+                                        <TextBlock Text="{Binding PerformanceSummary}"
+                                                   Foreground="{StaticResource Cyan}"
+                                                   FontSize="11"
+                                                   Margin="0,7,0,0" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                                    <StackPanel>
                                         <TextBlock Text="Application" Style="{StaticResource SectionTitle}" Margin="0,0,0,16" />
                                         <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding MinimizeToTray}">
                                             <TextBlock Text="Keep RSTT running in the notification area when closed" FontWeight="SemiBold" />
@@ -671,35 +846,55 @@
                                 <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                                     <StackPanel>
                                         <TextBlock Text="Global shortcuts" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock Text="Use a modifier plus a letter, digit, function key, or navigation key. Changes are registered before the previous shortcut is released."
+                                                   Style="{StaticResource MutedBody}" FontSize="11" Margin="0,5,0,0" />
                                         <Grid Margin="0,16,0,0">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="230" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Start / stop listening" />
-                                            <Border Grid.Column="1" Background="#15263A" CornerRadius="7" Padding="10,5">
-                                                <TextBlock Text="Ctrl + Alt + R" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
-                                            </Border>
+                                            <TextBlock Text="Start / stop listening" VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBox Text="{Binding ToggleListeningHotkey, UpdateSourceTrigger=LostFocus}"
+                                                         FontFamily="Cascadia Mono, Consolas" />
+                                                <TextBlock Text="{Binding ToggleListeningHotkeyError}"
+                                                           Foreground="{StaticResource Danger}"
+                                                           FontSize="10"
+                                                           TextWrapping="Wrap"
+                                                           Margin="2,4,0,0" />
+                                            </StackPanel>
                                         </Grid>
                                         <Grid Margin="0,13,0,0">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="230" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Toggle text injection" />
-                                            <Border Grid.Column="1" Background="#15263A" CornerRadius="7" Padding="10,5">
-                                                <TextBlock Text="Ctrl + Alt + T" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
-                                            </Border>
+                                            <TextBlock Text="Toggle text injection" VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBox Text="{Binding ToggleInjectionHotkey, UpdateSourceTrigger=LostFocus}"
+                                                         FontFamily="Cascadia Mono, Consolas" />
+                                                <TextBlock Text="{Binding ToggleInjectionHotkeyError}"
+                                                           Foreground="{StaticResource Danger}"
+                                                           FontSize="10"
+                                                           TextWrapping="Wrap"
+                                                           Margin="2,4,0,0" />
+                                            </StackPanel>
                                         </Grid>
                                         <Grid Margin="0,13,0,0">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="230" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Toggle captions" />
-                                            <Border Grid.Column="1" Background="#15263A" CornerRadius="7" Padding="10,5">
-                                                <TextBlock Text="Ctrl + Alt + C" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
-                                            </Border>
+                                            <TextBlock Text="Toggle captions" VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBox Text="{Binding ToggleCaptionsHotkey, UpdateSourceTrigger=LostFocus}"
+                                                         FontFamily="Cascadia Mono, Consolas" />
+                                                <TextBlock Text="{Binding ToggleCaptionsHotkeyError}"
+                                                           Foreground="{StaticResource Danger}"
+                                                           FontSize="10"
+                                                           TextWrapping="Wrap"
+                                                           Margin="2,4,0,0" />
+                                            </StackPanel>
                                         </Grid>
                                     </StackPanel>
                                 </Border>

@@ -1,56 +1,54 @@
 # Text injection
 
-RSTT sends newly stable transcript text to the current foreground application with Windows `SendInput`. It does not use the clipboard, simulate paste, or map words through the active physical keyboard layout.
+RSTT sends finalized transcript text to the current foreground application with Windows `SendInput`. It does not use the clipboard, paste commands, or keyboard-layout-dependent character mappings.
+
+## Production commit policy
+
+Live ASR partials can revise words as context arrives. Caption updates are therefore responsive, but irreversible typing uses `FinalOnlyCommitPolicy`: only an endpoint-final segment enters the injection channel.
+
+This is intentionally more conservative than stable-prefix typing. It avoids committing plausible-looking partial fragments that the model later rewrites. A future model may opt into another `ITranscriptCommitPolicy` only after model-specific validation.
+
+Turning typing on does not replay caption history. Turning it off immediately prevents future enqueueing, and queued requests recheck the setting/listening generation before delivery.
 
 ## Delivery contract
 
-Before and during a segment, RSTT verifies that:
+For each segment RSTT:
 
-1. typing is enabled and listening is active;
-2. the segment is non-empty and newly confirmed;
-3. a foreground window and process can be identified;
-4. the foreground process is not RSTT itself; and
-5. the same process remains foreground while characters are emitted.
+1. resolves the current foreground window and process immediately before sending;
+2. rejects a missing target and RSTT's own process;
+3. submits UTF-16 `KEYEVENTF_UNICODE` down/up pairs in batches;
+4. rechecks the target every 16 UTF-16 code units;
+5. serializes segments through one bounded worker; and
+6. pauses 2 ms between batches so target controls can process messages.
 
-Every UTF-16 code unit is submitted as a `KEYEVENTF_UNICODE` down/up pair. Calls are serialized so recognition segments retain their order. Character pairs are briefly paced because modern WinUI controls can coalesce a large, immediate `VK_PACKET` burst.
+If focus changes during a segment, delivery stops instead of continuing into the new application. An already delivered prefix cannot be recalled. Future complete segments resolve the new foreground target, so switching from Notepad to Word routes later text to Word.
 
-RSTT targets x64 Windows. Its managed `INPUT` layout is explicitly 40 bytes with the native anonymous union at byte 8, matching the Windows x64 ABI.
+The x64 `INPUT` structure is explicitly laid out to match the Windows ABI.
 
-If focus changes partway through a segment, RSTT stops that segment instead of continuing into the new application. The already delivered prefix cannot be recalled. The failure is logged without stopping captions or recognition.
+## Isolation from capture
 
-## Stable text only
+Text injection never runs on the WASAPI callback, audio conversion worker, recognition call, or WPF dispatcher. A slow target cannot block capture or decoding. The bounded injection queue preserves order while preventing unbounded memory growth.
 
-Streaming ASR text can change as context arrives. `TranscriptStabilizer` confirms a common prefix across ordered hypotheses and exposes only the newly committed suffix to injection. A final result flushes the remaining pending text.
+Repeated self-focus or target warnings are rate-limited and status-deduplicated. Self-focus is Debug-level because opening RSTT during recognition is normal.
 
-Consequences:
+## Caption focus behavior
 
-- raw partial hypotheses are never typed;
-- a committed segment is submitted once;
-- turning typing on does not dump old caption history; and
-- captions can remain responsive while typed output is conservative.
+The overlay uses `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `ShowActivated=false`, and a no-activation window style. Caption show/update operations do not call `Activate()`.
 
-## Focus and captions
+## Windows integrity levels
 
-The caption overlay uses `WS_EX_NOACTIVATE` and `WS_EX_TOOLWINDOW`, sets `ShowActivated=false`, and never calls `Activate()`. Showing or updating captions therefore does not take focus from Notepad, a browser field, Word, or another destination.
-
-RSTT also refuses to type into its own process. Use the overlay or another window when testing live typing.
-
-## Windows integrity levels (UIPI)
-
-Windows User Interface Privilege Isolation prevents a normal application from sending input to many elevated Administrator windows. `SendInput` can report failure or simply deliver no usable input when Windows blocks the target.
-
-RSTT intentionally:
+Windows User Interface Privilege Isolation can block a normal application from sending input to an elevated Administrator window. RSTT intentionally:
 
 - does not request Administrator privileges;
 - does not use `uiAccess`;
-- does not inject code into another process; and
+- does not inject code into other processes; and
 - does not bypass UIPI.
 
-Use both applications at the same integrity level if typed output is required. Captions remain available when injection is blocked.
+Run both applications at the same integrity level when typed output is required. Captions continue when injection is unavailable.
 
 ## Other limitations
 
-- The destination must expose an editable control and accept Unicode keyboard packets.
-- Secure desktop, credential prompts, some games, remote sessions, protected controls, and applications with custom input stacks may reject synthetic input.
-- Focus must remain on the intended process for the short duration of a stable segment.
-- Applications can transform input through autocorrect, shortcuts, IMEs, or editor-specific behavior after RSTT delivers it.
+- The target must accept Unicode keyboard packets in an editable control.
+- Secure desktop, credential prompts, protected controls, some games, remote sessions, and custom input stacks may reject synthetic input.
+- IMEs, autocorrect, application shortcuts, and editor behavior can transform delivered input.
+- Text already delivered before a target change cannot be retracted.

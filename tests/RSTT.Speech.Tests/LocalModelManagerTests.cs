@@ -44,10 +44,10 @@ public sealed class LocalModelManagerTests
             Directory.CreateDirectory(modelDirectory);
             File.WriteAllText(Path.Combine(modelDirectory, "model.json"), """
                 {
-                  "id": "ParakeetUnifiedEnInt8",
-                  "displayName": "Parakeet Unified English",
+                  "id": "NemotronStreamingEn06BInt8_560ms_20260425",
+                  "displayName": "Nemotron Streaming English 0.6B",
                   "engine": "online-transducer",
-                  "featureDimension": 128,
+                  "featureDimension": 80,
                   "files": { "encoder": "missing.onnx" }
                 }
                 """);
@@ -75,13 +75,25 @@ public sealed class LocalModelManagerTests
         {
             var manager = new LocalModelManager(new TestPaths(root), NullLogger<LocalModelManager>.Instance);
 
-            var model = Assert.Single(manager.GetAvailableModels());
+            var models = manager.GetAvailableModels();
+            var model = Assert.Single(models, candidate => candidate.IsRecommended);
 
+            Assert.Equal(5, models.Count);
             Assert.Equal(LocalModelManager.DefaultModelId, model.Id);
             Assert.True(model.IsRecommended);
             Assert.True(model.DownloadSizeBytes > 600_000_000);
-            Assert.Contains("Parakeet", model.DisplayName, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Nemotron", model.DisplayName, StringComparison.OrdinalIgnoreCase);
             Assert.False(model.IsInstalled);
+            Assert.Equal(
+                3,
+                models.Count(candidate =>
+                    candidate.Descriptor?.IntegrationStatus ==
+                    ModelIntegrationStatus.Available));
+            Assert.Equal(
+                2,
+                models.Count(candidate =>
+                    candidate.Descriptor?.IntegrationStatus ==
+                    ModelIntegrationStatus.ComingLater));
         }
         finally
         {
@@ -105,8 +117,8 @@ public sealed class LocalModelManagerTests
             Directory.CreateDirectory(modelDirectory);
             File.WriteAllText(Path.Combine(modelDirectory, "model.json"), """
                 {
-                  "id": "ParakeetUnifiedEnInt8",
-                  "displayName": "Parakeet Unified English",
+                  "id": "NemotronStreamingEn06BInt8_560ms_20260425",
+                  "displayName": "Nemotron Streaming English 0.6B",
                   "engine": "online-transducer",
                   "files": { "encoder": "..\\..\\outside.onnx" }
                 }

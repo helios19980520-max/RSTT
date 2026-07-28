@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using Microsoft.Extensions.Logging;
 using RSTT.App.Services;
 using RSTT.App.ViewModels;
 
@@ -14,17 +15,21 @@ public partial class MainWindow : Window, IDisposable
     private readonly System.Windows.Forms.NotifyIcon _trayIcon;
     private readonly CaptionOverlayWindow _overlay;
     private readonly GlobalHotkeyManager _hotkeys;
+    private bool _syncingHotkeys;
+    private bool _overlayPositionInitialized;
     private bool _allowClose;
     private bool _disposed;
 
-    public MainWindow(MainViewModel viewModel)
+    public MainWindow(
+        MainViewModel viewModel,
+        ILogger<GlobalHotkeyManager> hotkeyLogger)
     {
         _viewModel = viewModel;
         DataContext = viewModel;
         InitializeComponent();
         _overlay = new CaptionOverlayWindow { DataContext = viewModel };
-        _overlay.ContentRendered += PositionOverlay;
-        _hotkeys = new GlobalHotkeyManager(this);
+        _overlay.ContentRendered += InitializeOverlayPosition;
+        _hotkeys = new GlobalHotkeyManager(this, hotkeyLogger);
         _hotkeys.HotkeyPressed += OnHotkeyPressed;
         _hotkeys.RegistrationFailed += OnHotkeyRegistrationFailed;
         _trayIcon = CreateTrayIcon();
@@ -76,14 +81,17 @@ public partial class MainWindow : Window, IDisposable
             SyncOverlay();
         }
 
-        if (eventArgs.PropertyName is nameof(MainViewModel.CaptionWidth) or nameof(MainViewModel.CaptionFontSize))
-        {
-            Dispatcher.BeginInvoke(() => PositionOverlay(this, EventArgs.Empty));
-        }
-
         if (eventArgs.PropertyName == nameof(MainViewModel.StatusLabel))
         {
             _trayIcon.Text = $"RSTT — {_viewModel.StatusLabel}";
+        }
+
+        if (eventArgs.PropertyName is "" or
+            nameof(MainViewModel.ToggleListeningHotkey) or
+            nameof(MainViewModel.ToggleInjectionHotkey) or
+            nameof(MainViewModel.ToggleCaptionsHotkey))
+        {
+            SyncConfiguredHotkeys();
         }
     }
 
@@ -114,7 +122,7 @@ public partial class MainWindow : Window, IDisposable
 
     private void OnClosed(object? sender, EventArgs eventArgs)
     {
-        _overlay.ContentRendered -= PositionOverlay;
+        _overlay.ContentRendered -= InitializeOverlayPosition;
         _overlay.Close();
         Dispose();
     }
@@ -132,11 +140,36 @@ public partial class MainWindow : Window, IDisposable
         System.Windows.Application.Current.Shutdown();
     }
 
-    private void PositionOverlay(object? sender, EventArgs eventArgs)
+    private void InitializeOverlayPosition(object? sender, EventArgs eventArgs)
     {
+        if (_overlayPositionInitialized)
+        {
+            return;
+        }
+
+        _overlayPositionInitialized = true;
         var workArea = SystemParameters.WorkArea;
-        _overlay.Left = workArea.Left + Math.Max(16, (workArea.Width - _overlay.ActualWidth) / 2);
-        _overlay.Top = workArea.Bottom - _overlay.ActualHeight - 40;
+        var width = _overlay.ActualWidth > 0
+            ? _overlay.ActualWidth
+            : _viewModel.CaptionWidth;
+        var height = _overlay.ActualHeight > 0
+            ? _overlay.ActualHeight
+            : _viewModel.CaptionHeight;
+        var requestedLeft = _viewModel.CaptionLeft ??
+            workArea.Left + Math.Max(16, (workArea.Width - width) / 2);
+        var requestedTop = _viewModel.CaptionTop ??
+            workArea.Bottom - height - 40;
+        var virtualLeft = SystemParameters.VirtualScreenLeft;
+        var virtualTop = SystemParameters.VirtualScreenTop;
+        var maximumLeft = Math.Max(
+            virtualLeft,
+            virtualLeft + SystemParameters.VirtualScreenWidth - width);
+        var maximumTop = Math.Max(
+            virtualTop,
+            virtualTop + SystemParameters.VirtualScreenHeight - height);
+        _overlay.Left = Math.Clamp(requestedLeft, virtualLeft, maximumLeft);
+        _overlay.Top = Math.Clamp(requestedTop, virtualTop, maximumTop);
+        _overlay.BeginBoundsTracking();
     }
 
     private void OnHotkeyPressed(object? sender, RsttHotkey hotkey)
@@ -155,8 +188,65 @@ public partial class MainWindow : Window, IDisposable
         }
     }
 
-    private void OnHotkeyRegistrationFailed(object? sender, EventArgs eventArgs) =>
-        _viewModel.ReportHotkeyRegistrationFailure();
+    private void SyncConfiguredHotkeys()
+    {
+        if (_syncingHotkeys || !_hotkeys.IsInitialized)
+        {
+            return;
+        }
+
+        _syncingHotkeys = true;
+        try
+        {
+            TryApplyHotkey(
+                RsttHotkey.ToggleListening,
+                _viewModel.ToggleListeningHotkey);
+            TryApplyHotkey(
+                RsttHotkey.ToggleTextInjection,
+                _viewModel.ToggleInjectionHotkey);
+            TryApplyHotkey(
+                RsttHotkey.ToggleCaptionOverlay,
+                _viewModel.ToggleCaptionsHotkey);
+        }
+        finally
+        {
+            _syncingHotkeys = false;
+        }
+    }
+
+    private void TryApplyHotkey(RsttHotkey hotkey, string gesture)
+    {
+        if (_hotkeys.TryReplace(hotkey, gesture, out var error))
+        {
+            _viewModel.ConfirmHotkeyRegistration(
+                hotkey,
+                _hotkeys.GetGesture(hotkey));
+            return;
+        }
+
+        _viewModel.RejectHotkeyRegistration(
+            hotkey,
+            _hotkeys.GetGesture(hotkey),
+            error);
+    }
+
+    private void OnHotkeyRegistrationFailed(
+        object? sender,
+        HotkeyRegistrationFailedEventArgs eventArgs)
+    {
+        _syncingHotkeys = true;
+        try
+        {
+            _viewModel.RejectHotkeyRegistration(
+                eventArgs.Hotkey,
+                _hotkeys.GetGesture(eventArgs.Hotkey),
+                eventArgs.Message);
+        }
+        finally
+        {
+            _syncingHotkeys = false;
+        }
+    }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs eventArgs)
     {
@@ -219,6 +309,7 @@ public partial class MainWindow : Window, IDisposable
 
         _disposed = true;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        _hotkeys.HotkeyPressed -= OnHotkeyPressed;
         _hotkeys.RegistrationFailed -= OnHotkeyRegistrationFailed;
         _hotkeys.Dispose();
         _trayIcon.Dispose();

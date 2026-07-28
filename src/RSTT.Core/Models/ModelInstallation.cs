@@ -7,4 +7,6 @@ public sealed record ModelInstallation(
     IReadOnlyDictionary<string, string> Files,
     int NumThreads = 2,
     string Provider = "cpu",
-    int FeatureDimension = 80);
+    int FeatureDimension = 80,
+    StreamingRecognitionProfile? RecognitionProfile = null,
+    ModelDescriptor? Descriptor = null);

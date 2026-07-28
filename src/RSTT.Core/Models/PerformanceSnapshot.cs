@@ -1,0 +1,27 @@
+namespace RSTT.Core.Models;
+
+public sealed record PerformanceSnapshot(
+    DateTimeOffset CapturedAt,
+    double ProcessCpuPercent,
+    long WorkingSetBytes,
+    long ManagedHeapBytes,
+    int Gen0Collections,
+    int Gen1Collections,
+    int Gen2Collections,
+    int ThreadCount,
+    double AudioCallbackHz,
+    int AudioQueueDepth,
+    double AudioQueueDurationMs,
+    double OldestAudioAgeMs,
+    long DroppedAudioMilliseconds,
+    double DecodeP50Ms,
+    double DecodeP95Ms,
+    double DecodeMaxMs,
+    double RealtimeFactor,
+    double ResultHz,
+    double UiUpdateHz,
+    double InjectionHz,
+    long CoalescedUiEvents,
+    string Provider,
+    string ModelId,
+    string AudioDevice);

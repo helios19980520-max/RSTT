@@ -19,10 +19,14 @@ RSTT source and publish output do not include a speech model. The user explicitl
 
 The .NET self-contained publish includes Microsoft .NET runtime components under their applicable Microsoft licence terms. NuGet packages also carry transitive dependencies; a distributor should preserve the licence files included in publish/package outputs and complete its own release audit.
 
-## Downloaded speech model
+## Downloadable speech models
 
 | Item | Source | Terms |
 | --- | --- | --- |
+| Nemotron Speech Streaming English 0.6B | https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b | NVIDIA Open Model License Agreement |
+| sherpa-onnx Nemotron English INT8 ONNX export, 560 ms | https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25 | Export of the NVIDIA model for sherpa-onnx; underlying model terms continue to apply |
+| Nemotron 3.5 ASR Streaming Multilingual 0.6B | https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b | OpenMDW 1.1 |
+| sherpa-onnx Nemotron 3.5 multilingual INT8 ONNX export, 560 ms | https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11 | Export for sherpa-onnx; underlying model terms continue to apply |
 | Parakeet Unified English 0.6B | https://huggingface.co/nvidia/parakeet-unified-en-0.6b | NVIDIA Open Model License Agreement |
 | sherpa-onnx INT8 ONNX export, 1.12 s buffered streaming | https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-streaming-1120ms | Export of the NVIDIA model for sherpa-onnx; underlying model terms continue to apply |
 
@@ -30,6 +34,6 @@ Model notice:
 
 > Licensed by NVIDIA Corporation under the NVIDIA Open Model License.
 
-The NVIDIA model card describes the model as ready for commercial and non-commercial use, subject to the governing licence. Review the current [NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) and model card before use, modification, or redistribution.
+The NVIDIA model cards describe the applicable models as available for commercial and non-commercial use subject to their governing licence. Review the current [NVIDIA Open Model License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/), [OpenMDW 1.1](https://openmdw.ai/license-1-1/), and each model card before use, modification, or redistribution.
 
-The model was trained on third-party datasets listed in NVIDIA's model card. Model output can be inaccurate or biased and must not be treated as authoritative. RSTT provides transcription software, not a warranty of model fitness for a particular purpose.
+The models were trained on third-party datasets listed in their model cards. Model output can be inaccurate or biased and must not be treated as authoritative. RSTT provides transcription software, not a warranty of model fitness for a particular purpose.
