@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.Drawing;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using Microsoft.Extensions.Logging;
@@ -296,28 +295,10 @@ public partial class MainWindow : Window, IDisposable
 
     private static System.Drawing.Icon CreateBrandIcon()
     {
-        using var bitmap = new Bitmap(32, 32);
-        using (var graphics = Graphics.FromImage(bitmap))
-        {
-            graphics.Clear(Color.FromArgb(8, 13, 22));
-            using var accent = new SolidBrush(Color.FromArgb(40, 215, 196));
-            graphics.FillEllipse(accent, 2, 2, 28, 28);
-            using var textBrush = new SolidBrush(Color.FromArgb(6, 35, 31));
-            using var font = new Font("Segoe UI", 16, System.Drawing.FontStyle.Bold, GraphicsUnit.Pixel);
-            var textSize = graphics.MeasureString("R", font);
-            graphics.DrawString("R", font, textBrush, (32 - textSize.Width) / 2, (32 - textSize.Height) / 2);
-        }
-
-        var handle = bitmap.GetHicon();
-        try
-        {
-            using var icon = System.Drawing.Icon.FromHandle(handle);
-            return (System.Drawing.Icon)icon.Clone();
-        }
-        finally
-        {
-            DestroyIcon(handle);
-        }
+        using var stream = System.Windows.Application.GetResourceStream(
+            new Uri("pack://application:,,,/Assets/RSTT.ico")).Stream;
+        using var icon = new System.Drawing.Icon(stream, 32, 32);
+        return (System.Drawing.Icon)icon.Clone();
     }
 
     public void Dispose()
@@ -332,12 +313,11 @@ public partial class MainWindow : Window, IDisposable
         _hotkeys.HotkeyPressed -= OnHotkeyPressed;
         _hotkeys.RegistrationFailed -= OnHotkeyRegistrationFailed;
         _hotkeys.Dispose();
+        var icon = _trayIcon.Icon;
         _trayIcon.Dispose();
+        icon?.Dispose();
         GC.SuppressFinalize(this);
     }
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyIcon(nint iconHandle);
 
     private sealed class RsttColorTable : System.Windows.Forms.ProfessionalColorTable
     {

@@ -9,6 +9,7 @@
     <PublishSingleFile>false</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\RSTT.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
@@ -28,6 +29,8 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
   </ItemGroup>
   <ItemGroup>
+    <Resource Include="Assets\RSTT.ico" />
+    <Resource Include="Assets\RSTT.png" />
     <Content Include="Assets\Audio\jfk.wav">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>

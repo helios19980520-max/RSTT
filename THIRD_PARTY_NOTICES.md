@@ -7,7 +7,7 @@ RSTT source and publish output do not include a speech model. The user explicitl
 | Component | Version | Licence | Project |
 | --- | --- | --- | --- |
 | NAudio | 2.3.0 | MIT | https://github.com/naudio/NAudio |
-| sherpa-onnx | 1.13.4 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx |
+| sherpa-onnx | 1.13.8 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx |
 | Whisper.net / whisper.cpp bindings | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
 | whisper.cpp native runtime | Whisper.net 1.9.1 pinned submodule | MIT | https://github.com/ggml-org/whisper.cpp |
 | Microsoft.Extensions.DependencyInjection | 8.0.1 | MIT | https://github.com/dotnet/runtime |
@@ -25,8 +25,8 @@ RSTT source and publish output do not include a speech model. The user explicitl
 | --- | --- | --- | --- |
 | NVIDIA CUDA runtime libraries | 12.8 | NVIDIA CUDA Toolkit EULA, Attachment A redistributables | https://docs.nvidia.com/cuda/eula/ |
 | NVIDIA cuDNN runtime DLLs | 9.24.0.43 | NVIDIA SDK / cuDNN supplement | https://docs.nvidia.com/deeplearning/cudnn/latest/ |
-| ONNX Runtime CUDA provider | sherpa-onnx 1.13.4 distribution | MIT | https://github.com/microsoft/onnxruntime |
-| sherpa-onnx Windows CUDA distribution | 1.13.4 | Apache-2.0 plus bundled dependencies | https://github.com/k2-fsa/sherpa-onnx |
+| ONNX Runtime CUDA provider | 1.28.2, sherpa-onnx 1.13.8 distribution | MIT | https://github.com/microsoft/onnxruntime |
+| sherpa-onnx Windows CUDA distribution | 1.13.8 | Apache-2.0 plus bundled dependencies | https://github.com/k2-fsa/sherpa-onnx |
 
 The .NET self-contained publish includes Microsoft .NET runtime components under their applicable Microsoft licence terms. NuGet packages also carry transitive dependencies; a distributor should preserve the licence files included in publish/package outputs and complete its own release audit.
 

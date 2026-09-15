@@ -4,10 +4,18 @@ using RSTT.Core.Workers;
 using SherpaOnnx;
 using Whisper.net;
 #if WHISPER_CUDA12
+using System.Runtime.InteropServices;
 using Whisper.net.LibraryLoader;
 #endif
 
 #if WHISPER_CUDA12
+// Both CUDA workers ship together. Keep the pinned CUDA libraries loaded for
+// this process so whisper.cpp can resolve its imports on PCs without a toolkit.
+var cudaRuntimeRoot = Path.GetFullPath(Path.Combine(
+    AppContext.BaseDirectory, "..", "..", "sherpa-cuda12", "1.13.8"));
+_ = NativeLibrary.Load(Path.Combine(cudaRuntimeRoot, "cudart64_12.dll"));
+_ = NativeLibrary.Load(Path.Combine(cudaRuntimeRoot, "cublasLt64_12.dll"));
+_ = NativeLibrary.Load(Path.Combine(cudaRuntimeRoot, "cublas64_12.dll"));
 RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda12];
 const string Backend = "cuda";
 #else

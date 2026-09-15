@@ -1,11 +1,12 @@
 <Project>
   <PropertyGroup>
+    <IncludeAcceleratorWorkers Condition="'$(IncludeAcceleratorWorkers)' == ''">true</IncludeAcceleratorWorkers>
     <AcceleratorPackRoot Condition="'$(AcceleratorPackRoot)' == ''">$(MSBuildThisFileDirectory)..\artifacts\accelerator-pack\RSTT-Accelerator-Pack-1.0.2-win-x64</AcceleratorPackRoot>
     <SherpaCudaNativeRoot>$(AcceleratorPackRoot)\workers\sherpa-cuda12\1.13.8</SherpaCudaNativeRoot>
   </PropertyGroup>
   <!-- NuGet supplies CPU native sherpa/ORT binaries even in the CUDA project.
        Always pair freshly built managed workers with the complete pinned CUDA runtime. -->
-  <Target Name="CollectAcceleratorWorkers" Condition="Exists('$(SherpaCudaNativeRoot)\cudnn64_9.dll')">
+  <Target Name="CollectAcceleratorWorkers" Condition="'$(IncludeAcceleratorWorkers)' == 'true' and Exists('$(SherpaCudaNativeRoot)\cudnn64_9.dll')">
     <ItemGroup>
       <SherpaCudaManagedFiles Include="$(MSBuildThisFileDirectory)..\src\RSTT.Sherpa.Cuda12.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
       <SherpaCudaManagedFiles Remove="@(SherpaCudaManagedFiles)" Condition="'%(Filename)' == 'onnxruntime' or '%(Filename)' == 'sherpa-onnx-c-api' or '%(Filename)' == 'onnxruntime_providers_cuda' or '%(Filename)' == 'onnxruntime_providers_shared'" />
@@ -28,7 +29,7 @@
   </Target>
   <Target Name="CopyAcceleratorWorkers" AfterTargets="Build" DependsOnTargets="CollectAcceleratorWorkers">
     <Copy SourceFiles="@(AcceleratorWorker)" DestinationFiles="@(AcceleratorWorker->'$(OutDir)%(WorkerPath)')" SkipUnchangedFiles="true" />
-    <Message Condition="'@(AcceleratorWorker)' == ''" Importance="high" Text="CUDA runtime pack absent. Run scripts/Build-AcceleratorPack.ps1 to enable GPU recognition in this build." />
+    <Message Condition="'$(IncludeAcceleratorWorkers)' == 'true' and '@(AcceleratorWorker)' == ''" Importance="high" Text="CUDA runtime pack absent. Run scripts/Build-AcceleratorPack.ps1 to enable GPU recognition in this build." />
   </Target>
   <Target Name="PublishAcceleratorWorkers" BeforeTargets="ComputeFilesToPublish" DependsOnTargets="CollectAcceleratorWorkers">
     <ItemGroup>

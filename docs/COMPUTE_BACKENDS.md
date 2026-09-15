@@ -22,6 +22,11 @@ shutdown, ping, hypothesis, performance, readiness, and fault messages.
 The base package does not load sherpa or Whisper native DLLs in the WPF process.
 CUDA and CPU runtimes may therefore coexist without DLL-name collisions.
 
+The Whisper CUDA worker loads the pinned `cudart`, `cublasLt`, and `cublas`
+libraries from its sibling `workers/sherpa-cuda12/1.13.8` directory before
+loading whisper.cpp. Both CUDA worker directories must be distributed together;
+this avoids requiring a CUDA Toolkit installation on the user's computer.
+
 ## Selection policy
 
 | Requested setting | Behavior |
