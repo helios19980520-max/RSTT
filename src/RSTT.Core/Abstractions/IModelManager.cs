@@ -14,6 +14,10 @@ public interface IModelManager
 
     ModelInstallation GetSelectedInstallation();
 
+    Task<ModelInstallation> GetSelectedInstallationAsync(
+        ComputeBackend backend,
+        CancellationToken cancellationToken = default) => Task.FromResult(GetSelectedInstallation());
+
     Task SelectAsync(string modelId, CancellationToken cancellationToken = default);
 
     Task SetDefaultAsync(string modelId, CancellationToken cancellationToken = default);

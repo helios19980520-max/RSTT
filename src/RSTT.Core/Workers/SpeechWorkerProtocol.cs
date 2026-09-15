@@ -14,6 +14,7 @@ public enum SpeechWorkerMessageType : ushort
     Unload = 7,
     Shutdown = 8,
     Ping = 9,
+    Activate = 10,
     Ready = 100,
     Hypothesis = 101,
     Performance = 102,
@@ -43,7 +44,16 @@ public sealed record WorkerLoadRequest(
     string Engine = "",
     int FeatureDimension = 80,
     IReadOnlyDictionary<string, string>? Files = null,
-    WorkerVadPolicy? VadPolicy = null);
+    WorkerVadPolicy? VadPolicy = null,
+    WorkerStreamingPolicy? StreamingPolicy = null,
+    bool EnableProviderDiagnostics = true);
+
+public sealed record WorkerStreamingPolicy(
+    float TrailingSilenceSeconds = 1.2f,
+    float MaximumUtteranceSeconds = float.MaxValue,
+    int TailPaddingMs = 2400,
+    string DecodingMethod = "greedy_search",
+    bool EnableEndpoint = false);
 
 public sealed record WorkerVadPolicy(
     int PreRollMs = 200,
@@ -68,7 +78,10 @@ public sealed record WorkerPerformanceResponse(
     double DecodeMilliseconds,
     long WorkingSetBytes,
     double DecodedAudioMilliseconds = 0,
-    int SegmentCount = 0);
+    int SegmentCount = 0,
+    int InferenceCount = 0,
+    string ExecutionProvider = "",
+    string DeviceEvidence = "");
 
 public sealed record WorkerFaultResponse(
     string Stage,
@@ -83,7 +96,7 @@ public sealed record WorkerFaultResponse(
 /// </summary>
 public static class SpeechWorkerProtocol
 {
-    public const ushort Version = 1;
+    public const ushort Version = 2;
     public const int HeaderBytes = 16;
     public const int MaximumPayloadBytes = 64 * 1024 * 1024;
 

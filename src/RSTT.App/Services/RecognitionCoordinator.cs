@@ -11,14 +11,13 @@ using RSTT.Core.Transcription;
 namespace RSTT.App.Services;
 
 /// <summary>
-/// Owns one recognition session. Capture/inference, hypothesis stabilization, UI delivery,
-/// and SendInput are separate bounded stages so a slow target window cannot block audio.
+/// Owns one recognition session. Audio, transcript stabilization, and UI delivery
+/// remain independent of user-requested clipboard pastes.
 /// </summary>
 public sealed partial class RecognitionCoordinator : IAsyncDisposable
 {
     private const int ResultQueueCapacity = 128;
-    private const int InjectionQueueCapacity = 128;
-    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan UiInterval = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan RepeatedWarningInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan HealthCheckInterval = TimeSpan.FromSeconds(1);
@@ -34,6 +33,9 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private readonly CaptionHistory _captionHistory;
     private readonly IPerformanceMonitor _performance;
     private readonly ILogger<RecognitionCoordinator> _logger;
+    private readonly object _transcriptGate = new();
+    private readonly PendingPasteBuffer _pendingPaste = new();
+    private readonly SemaphoreSlim _pasteGate = new(1, 1);
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly object _sessionStateGate = new();
     private readonly object _uiGate = new();
@@ -43,23 +45,19 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     private CancellationTokenSource? _audioCancellation;
     private CancellationTokenSource? _uiCancellation;
     private ChannelWriter<ResultEnvelope>? _resultWriter;
-    private ChannelWriter<InjectionRequest>? _injectionWriter;
     private Task? _audioWorker;
     private Task? _resultWorker;
-    private Task? _injectionWorker;
     private Task? _uiWorker;
     private TranscriptUpdate? _pendingUiUpdate;
     private int _pendingUiCoalesced;
     private long _generation;
     private long _lastResultQueueWarning;
-    private long _lastInjectionWarning;
     private long _lastAudioTimestamp;
     private long _lastSpeechTimestamp;
     private long _lastRecognitionTimestamp;
     private long _lastHealthCheckTimestamp;
     private long _lastStallWarning;
     private int _recognizerRecoveryAttempted;
-    private TextInjectionStatus _lastInjectionStatus = TextInjectionStatus.Success;
     private bool _isListening;
 
     public RecognitionCoordinator(
@@ -100,6 +98,61 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
     }
 
     public event EventHandler<TranscriptUpdate>? TranscriptUpdated;
+
+    public PendingPasteSnapshot PendingPaste => _pendingPaste.Snapshot();
+
+    public async Task<TextInjectionResult?> PastePendingAsync(CancellationToken cancellationToken = default)
+    {
+        if (!await _pasteGate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return null;
+        try
+        {
+            PendingPasteSnapshot batch;
+            lock (_transcriptGate)
+            {
+                if (_stabilizer.CommitPending() is { } committed) _pendingPaste.Apply(committed);
+                batch = _pendingPaste.Snapshot();
+            }
+
+            if (batch.Text.Length == 0) return null;
+            LogCommitBoundary(_logger, Volatile.Read(ref _generation), batch.ThroughId, 0,
+                batch.Text.Length, ComputeTextHash(batch.Text));
+            var result = await _textInjection.InjectAsync(new InjectionRequest(
+                new SessionGenerationId(Volatile.Read(ref _generation)), batch.ThroughId, 0,
+                batch.Text, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            _performance.RecordInjectionAttempt(batch.Text.Length, result.SendInputCallCount,
+                result.QueueDepthAtEnqueue, result.Succeeded);
+            if (result.Succeeded)
+            {
+                _pendingPaste.Consume(batch.ThroughId);
+                _performance.RecordInjection();
+            }
+            else if (result.Status == TextInjectionStatus.SelfFocused)
+            {
+                LogSelfFocusedInjectionSuppressed(_logger);
+            }
+            else
+            {
+                LogInjectionNotCompleted(_logger, result.Status, result.DiagnosticMessage ?? "Paste was not completed.");
+            }
+            PublishPendingPaste();
+            return result;
+        }
+        finally { _pasteGate.Release(); }
+    }
+
+    public void ClearPendingPaste()
+    {
+        lock (_transcriptGate)
+        {
+            _ = _stabilizer.CommitPending();
+            _pendingPaste.Clear();
+        }
+        PublishPendingPaste();
+    }
+
+    private void PublishPendingPaste() => QueueUiUpdate(new TranscriptUpdate(
+        new TranscriptSnapshot(string.Empty, string.Empty, string.Empty), [], true));
+
 
     public event EventHandler<ApplicationStateSnapshot>? StateChanged
     {
@@ -166,7 +219,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                 return;
             }
 
-            _stabilizer.Reset();
+            lock (_transcriptGate) { _stabilizer.Reset(); }
             _captionHistory.Reset();
             var sessionStarted = Stopwatch.GetTimestamp();
             Interlocked.Exchange(ref _lastAudioTimestamp, sessionStarted);
@@ -396,8 +449,7 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         {
             if (!IsListening &&
                 _audioWorker is null &&
-                _resultWorker is null &&
-                _injectionWorker is null)
+                _resultWorker is null)
             {
                 return;
             }
@@ -431,33 +483,16 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                 SingleWriter = false,
                 AllowSynchronousContinuations = false,
             });
-        var injections = Channel.CreateBounded<InjectionRequest>(
-            new BoundedChannelOptions(InjectionQueueCapacity)
-            {
-                FullMode = BoundedChannelFullMode.Wait,
-                SingleReader = true,
-                SingleWriter = true,
-                AllowSynchronousContinuations = false,
-            });
-
         _resultWriter = results.Writer;
-        _injectionWriter = injections.Writer;
         lock (_terminalWriteGate)
         {
             _pendingTerminalWrites.Clear();
         }
         _pendingUiUpdate = null;
         _pendingUiCoalesced = 0;
-        _lastInjectionStatus = TextInjectionStatus.Success;
         _uiCancellation = new CancellationTokenSource();
         _resultWorker = Task.Run(
-            () => ProcessResultsAsync(results.Reader, injections.Writer, generation),
-            CancellationToken.None);
-        _injectionWorker = Task.Run(
-            () => ProcessInjectionsAsync(
-                injections.Reader,
-                generation,
-                _audioCancellation?.Token ?? CancellationToken.None),
+            () => ProcessResultsAsync(results.Reader, generation),
             CancellationToken.None);
         _uiWorker = Task.Run(
             () => PublishUiUpdatesAsync(_uiCancellation.Token),
@@ -531,7 +566,6 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
     private async Task ProcessResultsAsync(
         ChannelReader<ResultEnvelope> reader,
-        ChannelWriter<InjectionRequest> injectionWriter,
         SessionGenerationId generation)
     {
         try
@@ -546,13 +580,13 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
 
                 if (envelope.ResetCurrentSegment)
                 {
-                    var stableText = _stabilizer.ResetCurrentSegment();
+                    lock (_transcriptGate)
+                    {
+                        _stabilizer.ResetCurrentSegment();
+                        _pendingPaste.ClearPartial();
+                    }
                     _captionHistory.ClearPartial();
-                    QueueUiUpdate(new TranscriptUpdate(
-                        new TranscriptSnapshot(stableText, string.Empty, string.Empty),
-                        Array.Empty<TranscriptCommit>(),
-                        false,
-                        SessionGenerationId: generation));
+                    PublishPendingPaste();
                     continue;
                 }
 
@@ -561,82 +595,19 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
                     continue;
                 }
 
-                var update = _stabilizer.Process(result);
+                TranscriptUpdate update;
+                lock (_transcriptGate)
+                {
+                    update = _stabilizer.Process(result);
+                    _pendingPaste.Apply(update);
+                }
                 _captionHistory.Apply(update);
                 QueueUiUpdate(update);
-
-                if (_settings.Current.TextInjectionEnabled)
-                {
-                    foreach (var commit in update.Commits)
-                    {
-                        var request = new InjectionRequest(
-                            commit.SessionGenerationId,
-                            commit.CommitId,
-                            commit.SourceSequenceId,
-                            commit.Text,
-                            commit.Timestamp);
-                        LogCommitBoundary(
-                            _logger,
-                            commit.SessionGenerationId.Value,
-                            commit.CommitId,
-                            commit.SourceSequenceId,
-                            commit.Text.Length,
-                            ComputeTextHash(commit.Text));
-                        await injectionWriter
-                            .WriteAsync(request, CancellationToken.None)
-                            .ConfigureAwait(false);
-                    }
-                }
             }
         }
         catch (Exception exception)
         {
             LogResultProcessingFailed(_logger, exception);
-        }
-    }
-
-    private async Task ProcessInjectionsAsync(
-        ChannelReader<InjectionRequest> reader,
-        SessionGenerationId generation,
-        CancellationToken cancellationToken)
-    {
-        await foreach (var request in reader
-                           .ReadAllAsync(cancellationToken)
-                           .ConfigureAwait(false))
-        {
-            if (request.SessionGenerationId != generation ||
-                generation.Value != Volatile.Read(ref _generation))
-            {
-                continue;
-            }
-
-            try
-            {
-                var result = await _textInjection
-                    .InjectAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
-                _performance.RecordInjectionAttempt(
-                    request.Text.Length,
-                    result.SendInputCallCount,
-                    result.QueueDepthAtEnqueue,
-                    result.Succeeded);
-                if (result.Succeeded)
-                {
-                    _performance.RecordInjection();
-                    _lastInjectionStatus = TextInjectionStatus.Success;
-                    continue;
-                }
-
-                LogInjectionResultRateLimited(result);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                LogResultProcessingFailed(_logger, exception);
-            }
         }
     }
 
@@ -731,12 +702,6 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             await AwaitWorkerAsync(_resultWorker, timeout.Token).ConfigureAwait(false);
             _resultWorker = null;
 
-            incompleteStage = "drain ordered text injection requests";
-            var injectionWriter = Interlocked.Exchange(ref _injectionWriter, null);
-            injectionWriter?.TryComplete();
-            await AwaitWorkerAsync(_injectionWorker, timeout.Token).ConfigureAwait(false);
-            _injectionWorker = null;
-
             incompleteStage = "publish the final UI snapshot";
             lock (_uiGate)
             {
@@ -748,7 +713,6 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             LogStopTimedOut(_logger, incompleteStage, StopTimeout.TotalSeconds);
             _audioCancellation?.Cancel();
             Interlocked.Exchange(ref _resultWriter, null)?.TryComplete();
-            Interlocked.Exchange(ref _injectionWriter, null)?.TryComplete();
             await AwaitPendingTerminalWritesAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
@@ -761,12 +725,10 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             await AwaitWorkersBestEffortAsync(
                     _audioWorker,
                     _resultWorker,
-                    _injectionWorker,
                     _uiWorker)
                 .ConfigureAwait(false);
             _audioWorker = null;
             _resultWorker = null;
-            _injectionWorker = null;
             _uiWorker = null;
             _uiCancellation?.Dispose();
             _uiCancellation = null;
@@ -902,33 +864,6 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
             snapshot.ModelId);
     }
 
-    private void LogInjectionResultRateLimited(TextInjectionResult result)
-    {
-        var now = Stopwatch.GetTimestamp();
-        var statusChanged = result.Status != _lastInjectionStatus;
-        var previous = Interlocked.Read(ref _lastInjectionWarning);
-        if (!statusChanged &&
-            previous != 0 &&
-            Stopwatch.GetElapsedTime(previous, now) < RepeatedWarningInterval)
-        {
-            return;
-        }
-
-        _lastInjectionStatus = result.Status;
-        Interlocked.Exchange(ref _lastInjectionWarning, now);
-        if (result.Status == TextInjectionStatus.SelfFocused)
-        {
-            LogSelfFocusedInjectionSuppressed(_logger);
-        }
-        else
-        {
-            LogInjectionNotCompleted(
-                _logger,
-                result.Status,
-                result.DiagnosticMessage ?? "No diagnostic was provided.");
-        }
-    }
-
     private void TransitionSessionTo(TranscriptionSessionState next)
     {
         lock (_sessionStateGate)
@@ -1019,6 +954,8 @@ public sealed partial class RecognitionCoordinator : IAsyncDisposable
         _audioCancellation?.Dispose();
         _uiCancellation?.Dispose();
         _lifecycleLock.Dispose();
+        await _pasteGate.WaitAsync().ConfigureAwait(false);
+        _pasteGate.Dispose();
     }
 
     private sealed record ResultEnvelope(

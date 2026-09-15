@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
@@ -15,8 +16,7 @@ namespace RSTT.Audio;
 /// </summary>
 public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureService
 {
-    private const int RawQueueCapacity = 32;
-    private const int NormalizedQueueCapacity = 48;
+    private const int RawQueueCapacity = 512;
     private static readonly TimeSpan MeterInterval = TimeSpan.FromMilliseconds(40);
     private static readonly TimeSpan RepeatedWarningInterval = TimeSpan.FromSeconds(5);
 
@@ -25,12 +25,13 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly Pcm16kMonoConverter _converter = new();
     private Channel<RawAudioPacket> _rawPackets = CreateRawChannel();
-    private Channel<AudioChunk> _chunks = CreateNormalizedChannel();
+    private AudioChunkQueue _chunks = new();
     private WasapiLoopbackCapture? _capture;
     private CancellationTokenSource? _processingCancellation;
     private Task? _processingWorker;
     private long _sequenceNumber;
     private long _queuedSourceFrames;
+    private int _sourceSampleRate = AudioChunk.SampleRate;
     private long _oldestQueuedAtTicks;
     private int _rawQueueDepth;
     private long _lastDropWarningTicks;
@@ -73,8 +74,9 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
             }
 
             _rawPackets = CreateRawChannel();
-            _chunks = CreateNormalizedChannel();
+            _chunks = new AudioChunkQueue();
             _sequenceNumber = 0;
+            _converter.Reset();
             _smoothedLevel = 0;
             _rawQueueDepth = 0;
             _queuedSourceFrames = 0;
@@ -90,6 +92,7 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
                 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
                 : enumerator.GetDevice(deviceId);
             _capture = new WasapiLoopbackCapture(device);
+            _sourceSampleRate = _capture.WaveFormat.SampleRate;
             _capture.DataAvailable += OnDataAvailable;
             _capture.RecordingStopped += OnRecordingStopped;
             _performance.SetSessionContext(string.Empty, string.Empty, device.FriendlyName);
@@ -99,7 +102,7 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
         catch (Exception exception)
         {
             _rawPackets.Writer.TryComplete(exception);
-            _chunks.Writer.TryComplete(exception);
+            _chunks.Complete(exception);
             _processingCancellation?.Cancel();
             LogCaptureStartFailure(_logger, exception);
             throw;
@@ -142,8 +145,16 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
         _processingCancellation = null;
     }
 
-    public IAsyncEnumerable<AudioChunk> ReadChunksAsync(CancellationToken cancellationToken = default) =>
-        _chunks.Reader.ReadAllAsync(cancellationToken);
+    public async IAsyncEnumerable<AudioChunk> ReadChunksAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var chunk in _chunks.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            _chunks.Acknowledge(chunk);
+            UpdateQueueMetrics(_sourceSampleRate);
+            yield return chunk;
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -184,6 +195,7 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
             ArrayPool<byte>.Shared.Return(buffer);
             _performance.RecordDroppedAudio(frameCount * 1000d / format.SampleRate);
             LogDroppedAudioRateLimited();
+            _rawPackets.Writer.TryComplete(new InvalidOperationException("Audio capture could not keep up. Capture stopped instead of continuing with gaps."));
             return;
         }
 
@@ -234,11 +246,8 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
                         Interlocked.Increment(ref _sequenceNumber),
                         packet.CapturedAt,
                         samples);
-                    if (!_chunks.Writer.TryWrite(chunk))
-                    {
-                        _performance.RecordDroppedAudio(chunk.Duration.TotalMilliseconds);
-                        LogDroppedAudioRateLimited();
-                    }
+                    _chunks.Write(chunk);
+                    UpdateQueueMetrics(packet.Format.SampleRate);
                 }
                 finally
                 {
@@ -246,16 +255,17 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
                 }
             }
 
-            _chunks.Writer.TryComplete();
+            _chunks.Complete();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _chunks.Writer.TryComplete();
+            _chunks.Complete();
         }
         catch (Exception exception)
         {
             LogConversionFailure(_logger, exception);
-            _chunks.Writer.TryComplete(exception);
+            StopCaptureUnsafe();
+            _chunks.Complete(exception);
         }
         finally
         {
@@ -307,12 +317,16 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
     {
         var queuedFrames = Math.Max(0, Interlocked.Read(ref _queuedSourceFrames));
         var oldestTicks = Interlocked.Read(ref _oldestQueuedAtTicks);
+        if (_chunks.Reader.TryPeek(out var oldestNormalized))
+            oldestTicks = oldestTicks <= 0 ? oldestNormalized.CapturedAt.UtcTicks :
+                Math.Min(oldestTicks, oldestNormalized.CapturedAt.UtcTicks);
         var oldestAge = oldestTicks <= 0
             ? 0
             : Math.Max(0, (DateTimeOffset.UtcNow - new DateTimeOffset(oldestTicks, TimeSpan.Zero)).TotalMilliseconds);
         _performance.SetAudioQueue(
-            Math.Max(0, Volatile.Read(ref _rawQueueDepth)),
-            queuedFrames * 1000d / Math.Max(1, sampleRate),
+            Math.Max(0, Volatile.Read(ref _rawQueueDepth)) + _chunks.Count,
+            queuedFrames * 1000d / Math.Max(1, sampleRate) +
+                _chunks.QueuedSamples * 1000d / AudioChunk.SampleRate,
             oldestAge);
     }
 
@@ -350,15 +364,6 @@ public sealed partial class WasapiLoopbackAudioCaptureService : IAudioCaptureSer
 
     private static Channel<RawAudioPacket> CreateRawChannel() =>
         Channel.CreateBounded<RawAudioPacket>(new BoundedChannelOptions(RawQueueCapacity)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = true,
-            AllowSynchronousContinuations = false,
-        });
-
-    private static Channel<AudioChunk> CreateNormalizedChannel() =>
-        Channel.CreateBounded<AudioChunk>(new BoundedChannelOptions(NormalizedQueueCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,

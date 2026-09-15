@@ -12,11 +12,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$sherpaVersion = '1.13.4'
+$sherpaVersion = '1.13.8'
 $whisperVersion = '1.9.1'
-$packVersion = '1.0.0'
-$archiveName = "sherpa-onnx-v$sherpaVersion-cuda-12.x-cudnn-9.x-win-x64-cuda.tar.bz2"
-$archiveSha256 = '11b56076060c109e16d85eba3acfb03f6d0c4a738ecd2a99dd45eb689b2051a4'
+$packVersion = '1.0.2'
+$archiveName = "sherpa-onnx-v$sherpaVersion-cuda-12.x-cudnn-9.x-onnxruntime1.28.2-win-x64-cuda.tar.bz2"
+$archiveSha256 = '066c5b54dbafaa1388001a9c9837ac1374dbba6d6678f193ca06aa0d8e94d8c3'
 $archiveUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/$archiveName"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts'))
@@ -79,8 +79,7 @@ if (-not $actualArchiveHash.Equals(
     throw "Sherpa CUDA archive SHA-256 mismatch. Expected $archiveSha256, got $actualArchiveHash."
 }
 
-$sherpaDistribution = Join-Path $extractRoot `
-    "sherpa-onnx-v$sherpaVersion-cuda-12.x-cudnn-9.x-win-x64-cuda"
+$sherpaDistribution = Join-Path $extractRoot ($archiveName -replace '\.tar\.bz2$', '')
 if (-not (Test-Path -LiteralPath $sherpaDistribution -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
     & tar -xf $SherpaArchivePath -C $extractRoot
@@ -121,12 +120,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Whisper CUDA worker publish failed (dotnet exit $LASTEXITCODE)."
 }
 
-$sherpaBin = Join-Path $sherpaDistribution 'bin'
 $sherpaLib = Join-Path $sherpaDistribution 'lib'
 $sherpaNativeFiles = @{
-    'onnxruntime.dll' = Join-Path $sherpaBin 'onnxruntime.dll'
-    'onnxruntime_providers_cuda.dll' = Join-Path $sherpaBin 'onnxruntime_providers_cuda.dll'
-    'onnxruntime_providers_shared.dll' = Join-Path $sherpaBin 'onnxruntime_providers_shared.dll'
+    'onnxruntime.dll' = Join-Path $sherpaLib 'onnxruntime.dll'
+    'onnxruntime_providers_cuda.dll' = Join-Path $sherpaLib 'onnxruntime_providers_cuda.dll'
+    'onnxruntime_providers_shared.dll' = Join-Path $sherpaLib 'onnxruntime_providers_shared.dll'
     'sherpa-onnx-c-api.dll' = Join-Path $sherpaLib 'sherpa-onnx-c-api.dll'
 }
 foreach ($entry in $sherpaNativeFiles.GetEnumerator()) {
@@ -204,6 +202,7 @@ $manifest = [ordered]@{
     formatVersion = 1
     product = 'RSTT Accelerator Pack'
     productVersion = $packVersion
+    speechWorkerProtocol = 2
     platform = 'win-x64'
     sherpaOnnxVersion = $sherpaVersion
     whisperRuntimeVersion = $whisperVersion

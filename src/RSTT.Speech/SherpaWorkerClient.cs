@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using RSTT.Core.Models;
 using RSTT.Core.Workers;
+using RSTT.Core.Compute;
 
 namespace RSTT.Speech;
 
@@ -11,20 +12,27 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
     private readonly NamedPipeClientStream _pipe;
     private long _correlationId;
     private bool _disposed;
+    private readonly SherpaProviderEvidence _providerEvidence;
+    private readonly Task _stderrReader;
 
     private SherpaWorkerClient(
         Process process,
         NamedPipeClientStream pipe,
         ComputeBackend backend,
-        WorkerHandshakeResponse handshake)
+        WorkerHandshakeResponse handshake,
+        SherpaProviderEvidence providerEvidence,
+        Task stderrReader)
     {
         _process = process;
         _pipe = pipe;
         Backend = backend;
         Handshake = handshake;
+        _providerEvidence = providerEvidence;
+        _stderrReader = stderrReader;
     }
 
     public ComputeBackend Backend { get; }
+    public int ProcessId => _process.Id;
 
     public WorkerHandshakeResponse Handshake { get; }
 
@@ -51,6 +59,7 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
         {
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardError = true,
             WindowStyle = ProcessWindowStyle.Hidden,
             WorkingDirectory = Path.GetDirectoryName(executable)
                 ?? AppContext.BaseDirectory,
@@ -59,6 +68,12 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
         startInfo.ArgumentList.Add(pipeName);
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Could not start {executable}.");
+        var evidence = new SherpaProviderEvidence();
+        var stderrReader = Task.Run(async () =>
+        {
+            while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is { } line)
+                evidence.Observe(line);
+        });
         var pipe = new NamedPipeClientStream(
             ".",
             pipeName,
@@ -99,7 +114,7 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
                     $"Worker backend '{handshake.Backend}' does not match requested backend '{expectedBackend}'.");
             }
 
-            return new SherpaWorkerClient(process, pipe, backend, handshake)
+            return new SherpaWorkerClient(process, pipe, backend, handshake, evidence, stderrReader)
             {
                 _correlationId = correlation,
             };
@@ -108,6 +123,7 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
         {
             pipe.Dispose();
             Terminate(process);
+            await stderrReader.ConfigureAwait(false);
             process.Dispose();
             throw;
         }
@@ -116,7 +132,9 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
     public async Task<WorkerBatchResult> LoadAsync(
         ModelInstallation installation,
         string language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RecognitionMode mode = RecognitionMode.Balanced,
+        WorkerStreamingPolicy? streamingPolicy = null)
     {
         var correlation = NextCorrelation();
         var policy = installation.Descriptor?.VadPolicy;
@@ -128,13 +146,14 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
             installation.Engine,
             installation.FeatureDimension,
             installation.Files,
-            policy is null
-                ? null
+            RecognitionSchedulingPolicy.Vad(mode, policy is null
+                ? new WorkerVadPolicy()
                 : new WorkerVadPolicy(
                     policy.PreRollMs,
                     policy.PostRollMs,
                     policy.MaximumSegmentMs,
-                    policy.Threshold));
+                    policy.Threshold)),
+            streamingPolicy ?? RecognitionSchedulingPolicy.Streaming(mode));
         await SpeechWorkerProtocol.WriteAsync(
             _pipe,
             SpeechWorkerProtocol.Json(SpeechWorkerMessageType.Load, correlation, request),
@@ -152,7 +171,23 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
                 correlation,
                 ReadOnlyMemory<byte>.Empty),
             cancellationToken).ConfigureAwait(false);
-        return await ReadBatchAsync(correlation, cancellationToken).ConfigureAwait(false);
+        var result = await ReadBatchAsync(correlation, cancellationToken).ConfigureAwait(false);
+        if (Backend == ComputeBackend.Cuda)
+        {
+            await _providerEvidence.WarmupCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            var evidence = _providerEvidence.Verify();
+            if (result.Performance is not { InferenceCount: > 0 })
+                throw new InvalidOperationException("CUDA warmup did not execute inference.");
+            correlation = NextCorrelation();
+            await SpeechWorkerProtocol.WriteAsync(_pipe,
+                new SpeechWorkerFrame(SpeechWorkerMessageType.Activate, correlation, ReadOnlyMemory<byte>.Empty),
+                cancellationToken).ConfigureAwait(false);
+            result = await ReadBatchAsync(correlation, cancellationToken).ConfigureAwait(false);
+            if (result.Performance is not { InferenceCount: > 0, ExecutionProvider: "cuda" })
+                throw new InvalidOperationException("CUDA activation did not execute inference.");
+            result = result with { Performance = result.Performance with { DeviceEvidence = evidence } };
+        }
+        return result;
     }
 
     public async Task StartSessionAsync(
@@ -231,6 +266,8 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
                 Terminate(_process);
             }
 
+            await _stderrReader.ConfigureAwait(false);
+
             _process.Dispose();
         }
     }
@@ -246,8 +283,13 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
         {
             var frame = await SpeechWorkerProtocol
                 .ReadAsync(_pipe, cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw new EndOfStreamException("The sherpa worker disconnected.");
+                .ConfigureAwait(false);
+            if (frame is null)
+            {
+                try { await _stderrReader.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false); }
+                catch (TimeoutException) { }
+                throw new EndOfStreamException($"The sherpa worker disconnected. {_providerEvidence.FailureDetail}");
+            }
             if (frame.CorrelationId != correlation)
             {
                 throw new InvalidDataException(
@@ -307,8 +349,8 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
         string? workerRoot)
     {
         var folder = backend == ComputeBackend.Cuda
-            ? Path.Combine("workers", "sherpa-cuda12", "1.13.4")
-            : Path.Combine("workers", "sherpa-cpu", "1.13.4");
+            ? Path.Combine("workers", "sherpa-cuda12", "1.13.8")
+            : Path.Combine("workers", "sherpa-cpu", "1.13.8");
         if (!string.IsNullOrWhiteSpace(workerRoot))
         {
             return Path.Combine(
@@ -330,7 +372,7 @@ internal sealed class SherpaWorkerClient : IAsyncDisposable
             folder,
             "RSTT.Speech.Worker.exe",
             project,
-            allowDevelopmentFallback);
+            allowDevelopmentFallback && backend == ComputeBackend.Cpu);
     }
 
     private long NextCorrelation() => Interlocked.Increment(ref _correlationId);

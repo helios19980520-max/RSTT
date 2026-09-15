@@ -26,7 +26,8 @@ public sealed class AppSettings
 
     public int CpuThreadLimit { get; set; }
 
-    public bool TextInjectionEnabled { get; set; } = true;
+    // Legacy settings are retained for JSON compatibility. Recognition never types automatically.
+    public bool TextInjectionEnabled { get; set; }
 
     public TextInjectionDeliveryMode TextInjectionDeliveryMode { get; set; } =
         TextInjectionDeliveryMode.Automatic;
@@ -68,6 +69,8 @@ public sealed class AppSettings
     public string ToggleListeningHotkey { get; set; } = "Ctrl+Alt+R";
 
     public string ToggleInjectionHotkey { get; set; } = "Ctrl+Alt+T";
+
+    public string PasteRecognizedSentencesHotkey { get; set; } = "MMB";
 
     public string ToggleCaptionsHotkey { get; set; } = "Ctrl+Alt+C";
 }

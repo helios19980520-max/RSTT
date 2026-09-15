@@ -18,7 +18,7 @@ public sealed class SherpaWorkerClientTests
         Assert.Equal(ComputeBackend.Cpu, worker.Backend);
         Assert.Equal("sherpa-onnx", worker.Handshake.Engine);
         Assert.Equal("cpu", worker.Handshake.Backend);
-        Assert.Equal(1, worker.Handshake.ProtocolVersion);
+        Assert.Equal(RSTT.Core.Workers.SpeechWorkerProtocol.Version, worker.Handshake.ProtocolVersion);
         Assert.Contains("sherpa-onnx", worker.Handshake.RuntimeVersion, StringComparison.Ordinal);
     }
 }

@@ -15,13 +15,14 @@ namespace RSTT.Speech.Tests;
 public sealed class RecognitionCoordinatorLifecycleTests
 {
     [Fact]
-    public async Task StopDrainsAudioBeforeInputFinishedAndInjectsTerminalCommit()
+    public async Task StopDrainsAudioAndKeepsTerminalTextUntilManualPaste()
     {
         var events = new ConcurrentQueue<string>();
         var capture = new FakeCapture(events);
         var engine = new FakeEngine(events);
         var injection = new FakeInjection(events);
         var settings = new FakeSettings();
+        settings.Current.TextInjectionEnabled = true; // Legacy setting must not restore automatic typing.
         await using var coordinator = new RecognitionCoordinator(
             capture,
             engine,
@@ -45,7 +46,12 @@ public sealed class RecognitionCoordinatorLifecycleTests
         AssertBefore(ordered, "capture-stop", "input-finished");
         AssertBefore(ordered, "audio:1", "input-finished");
         AssertBefore(ordered, "audio:2", "input-finished");
-        AssertBefore(ordered, "input-finished", "inject:terminal tail");
+        Assert.DoesNotContain("inject:terminal tail", ordered);
+        Assert.Equal("terminal tail", coordinator.PendingPaste.Text);
+        Assert.True((await coordinator.PastePendingAsync())?.Succeeded);
+        Assert.Contains("inject:terminal tail", events);
+        Assert.Empty(coordinator.PendingPaste.Text);
+        Assert.Null(await coordinator.PastePendingAsync());
         Assert.False(coordinator.IsListening);
         Assert.Equal(TranscriptionSessionState.Stopped, coordinator.SessionState);
     }
@@ -76,6 +82,44 @@ public sealed class RecognitionCoordinatorLifecycleTests
         Assert.Equal(20, sampleCounts.Length);
         Assert.All(sampleCounts[..^1], count => Assert.Equal(8_960, count));
         Assert.Equal(5_760, sampleCounts[^1]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RecognitionContinuesDuringPasteAndOnlySuccessfulBatchIsConsumed(bool succeeds)
+    {
+        var events = new ConcurrentQueue<string>();
+        var engine = new FakeEngine(events);
+        var injection = new FakeInjection(events)
+        {
+            Completion = new TaskCompletionSource<TextInjectionResult>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        await using var coordinator = new RecognitionCoordinator(
+            new FakeCapture(events), engine, injection, new FakeSettings(), new ApplicationStateService(),
+            new TranscriptStabilizer(new TextFormattingPolicy()), new CaptionHistory(),
+            NullPerformanceMonitor.Instance, NullLogger<RecognitionCoordinator>.Instance);
+        var firstReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinator.TranscriptUpdated += (_, _) =>
+        {
+            var text = coordinator.PendingPaste.Text;
+            if (text == "First paragraph.") firstReady.TrySetResult();
+            if (text == "First paragraph. Second paragraph.") secondReady.TrySetResult();
+        };
+        await coordinator.StartAsync();
+        engine.EmitText("First paragraph.");
+        await firstReady.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.DoesNotContain(events, item => item.StartsWith("inject:", StringComparison.Ordinal));
+        var paste = coordinator.PastePendingAsync();
+        Assert.Null(await coordinator.PastePendingAsync());
+        engine.EmitText("Second paragraph.");
+        await secondReady.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        injection.Completion.SetResult(new TextInjectionResult(
+            succeeds ? TextInjectionStatus.Success : TextInjectionStatus.Failed, 4, succeeds ? 4 : 0, 0, 123, 456, 0));
+        Assert.Equal(succeeds, (await paste)!.Succeeded);
+        Assert.Equal(succeeds ? "Second paragraph." : "First paragraph. Second paragraph.", coordinator.PendingPaste.Text);
+        Assert.Single(events, item => item.StartsWith("inject:", StringComparison.Ordinal));
     }
 
     private static void AssertBefore(string[] actual, string first, string second)
@@ -162,6 +206,9 @@ public sealed class RecognitionCoordinatorLifecycleTests
 
         public event EventHandler<RecognitionHypothesis>? RecognitionResultAvailable;
 
+        public void EmitText(string text) => RecognitionResultAvailable?.Invoke(this,
+            new RecognitionHypothesis(new SessionGenerationId(1), 1, text, true, DateTimeOffset.UtcNow, "en", "fake"));
+
         public Task InitializeAsync(CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
@@ -209,6 +256,7 @@ public sealed class RecognitionCoordinatorLifecycleTests
     private sealed class FakeInjection : ITextInjectionService
     {
         private readonly ConcurrentQueue<string> _events;
+        public TaskCompletionSource<TextInjectionResult>? Completion { get; init; }
 
         public FakeInjection(ConcurrentQueue<string> events)
         {
@@ -220,7 +268,7 @@ public sealed class RecognitionCoordinatorLifecycleTests
             CancellationToken cancellationToken = default)
         {
             _events.Enqueue($"inject:{request.Text}");
-            return Task.FromResult(new TextInjectionResult(
+            return Completion?.Task ?? Task.FromResult(new TextInjectionResult(
                 TextInjectionStatus.Success,
                 request.Text.Length * 2,
                 request.Text.Length * 2,

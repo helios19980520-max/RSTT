@@ -1,20 +1,17 @@
 using NAudio.Wave;
+using NAudio.Dsp;
 
 namespace RSTT.Audio;
 
 /// <summary>
-/// Converts capture callbacks to mono float samples and resamples them incrementally. Keeping
-/// the final source sample between callbacks avoids gaps at callback boundaries.
+/// Converts capture callbacks to mono with a persistent, anti-aliased resampler.
 /// </summary>
 internal sealed class Pcm16kMonoConverter
 {
     private const int TargetSampleRate = 16_000;
     private int _sourceSampleRate;
     private int _sourceChannels;
-    private long _sourceFramesProcessed;
-    private double _nextOutputSourcePosition;
-    private float _lastSample;
-    private bool _hasLastSample;
+    private readonly WdlResampler _resampler = new();
 
     public float[] Process(byte[] buffer, int byteCount, WaveFormat format)
     {
@@ -36,55 +33,38 @@ internal sealed class Pcm16kMonoConverter
             return [];
         }
 
-        var startSourceIndex = _sourceFramesProcessed - (_hasLastSample ? 1 : 0);
-        var endSourceIndex = _sourceFramesProcessed + frameCount;
-        var sourceStep = (double)format.SampleRate / TargetSampleRate;
-        var remainingSourceFrames = (endSourceIndex - 1) - _nextOutputSourcePosition;
-        var outputCount = remainingSourceFrames <= 0
-            ? 0
-            : (int)Math.Ceiling(remainingSourceFrames / sourceStep);
-        var samples = new float[outputCount];
-        var outputIndex = 0;
-        while (outputIndex < samples.Length && _nextOutputSourcePosition < endSourceIndex - 1)
+        _resampler.ResamplePrepare(frameCount, 1, out var input, out var inputOffset);
+        for (var frame = 0; frame < frameCount; frame++)
         {
-            var localPosition = _nextOutputSourcePosition - startSourceIndex;
-            var lowerIndex = (int)Math.Floor(localPosition);
-            var sourceLength = frameCount + (_hasLastSample ? 1 : 0);
-            if (lowerIndex < 0 || lowerIndex + 1 >= sourceLength)
-            {
-                break;
-            }
-
-            var fraction = (float)(localPosition - lowerIndex);
-            var lower = ReadMonoFrame(buffer, lowerIndex, format);
-            var upper = ReadMonoFrame(buffer, lowerIndex + 1, format);
-            samples[outputIndex++] = lower + ((upper - lower) * fraction);
-            _nextOutputSourcePosition += sourceStep;
+            input[inputOffset + frame] = ReadMonoFrame(buffer, frame, format);
         }
-
-        if (outputIndex != samples.Length)
-        {
-            Array.Resize(ref samples, outputIndex);
-        }
-
-        _sourceFramesProcessed = endSourceIndex;
-        _lastSample = ReadMonoFrame(buffer, frameCount - 1 + (_hasLastSample ? 1 : 0), format);
-        _hasLastSample = true;
+        var samples = new float[(int)Math.Ceiling(frameCount * (double)TargetSampleRate / format.SampleRate) + 128];
+        var count = _resampler.ResampleOut(samples, 0, frameCount, samples.Length, 1);
+        Array.Resize(ref samples, count);
         return samples;
+    }
+
+    public void Reset()
+    {
+        _sourceSampleRate = 0;
+        _sourceChannels = 0;
+        _resampler.Reset();
     }
 
     private void Reset(int sampleRate, int channels)
     {
         _sourceSampleRate = sampleRate;
         _sourceChannels = channels;
-        _sourceFramesProcessed = 0;
-        _nextOutputSourcePosition = 0;
-        _hasLastSample = false;
+        _resampler.Reset();
+        _resampler.SetMode(true, 2, true, 64, 32);
+        _resampler.SetFeedMode(true);
+        _resampler.SetRates(sampleRate, TargetSampleRate);
     }
 
     private static float ReadSample(byte[] buffer, int offset, WaveFormat format)
     {
-        if (format.Encoding == WaveFormatEncoding.IeeeFloat && format.BitsPerSample == 32)
+        if ((format.Encoding == WaveFormatEncoding.IeeeFloat ||
+             format is WaveFormatExtensible { SubFormat: var subFormat } && subFormat == new Guid("00000003-0000-0010-8000-00aa00389b71")) && format.BitsPerSample == 32)
         {
             return BitConverter.ToSingle(buffer, offset);
         }
@@ -98,14 +78,8 @@ internal sealed class Pcm16kMonoConverter
         };
     }
 
-    private float ReadMonoFrame(byte[] buffer, int combinedFrameIndex, WaveFormat format)
+    private static float ReadMonoFrame(byte[] buffer, int frameIndex, WaveFormat format)
     {
-        if (_hasLastSample && combinedFrameIndex == 0)
-        {
-            return _lastSample;
-        }
-
-        var frameIndex = combinedFrameIndex - (_hasLastSample ? 1 : 0);
         var channelSum = 0f;
         var bytesPerSample = format.BitsPerSample / 8;
         for (var channel = 0; channel < format.Channels; channel++)

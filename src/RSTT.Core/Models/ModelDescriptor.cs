@@ -75,7 +75,7 @@ public sealed class VadSegmentationPolicy
 }
 
 /// <summary>A built-in, offline-available description of one curated speech model integration.</summary>
-public sealed class ModelDescriptor
+public sealed record ModelDescriptor
 {
     public string Id { get; init; } = string.Empty;
 
@@ -146,4 +146,12 @@ public sealed class ModelDescriptor
     public string DirectoryName { get; init; } = string.Empty;
 
     public IReadOnlyList<ModelArtifact> Artifacts { get; init; } = [];
+
+    public CudaModelVariant? CudaVariant { get; init; }
 }
+
+/// <summary>Full-precision weights for CUDA; the compact CPU installation is retained.</summary>
+public sealed record CudaModelVariant(
+    string DirectoryName,
+    string Revision,
+    IReadOnlyList<ModelArtifact> Artifacts);

@@ -11,7 +11,7 @@ public enum HotkeyModifiers : uint
     NoRepeat = 0x4000,
 }
 
-public sealed record HotkeyGesture(HotkeyModifiers Modifiers, uint VirtualKey)
+public sealed record HotkeyGesture(HotkeyModifiers Modifiers, uint VirtualKey, bool MiddleMouse = false)
 {
     public override string ToString()
     {
@@ -36,7 +36,8 @@ public sealed record HotkeyGesture(HotkeyModifiers Modifiers, uint VirtualKey)
             parts.Add("Win");
         }
 
-        parts.Add(HotkeyGestureParser.FormatVirtualKey(VirtualKey));
+        if (MiddleMouse) parts.Add("MMB");
+        if (VirtualKey != 0) parts.Add(HotkeyGestureParser.FormatVirtualKey(VirtualKey));
         return string.Join('+', parts);
     }
 }
@@ -48,7 +49,7 @@ public static class HotkeyGestureParser
         gesture = default!;
         error = string.Empty;
         var parts = value?.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
-        if (parts.Length < 2)
+        if (parts.Length == 0)
         {
             error = "Use at least one modifier plus a key, for example Ctrl+Alt+R.";
             return false;
@@ -56,10 +57,16 @@ public static class HotkeyGestureParser
 
         var modifiers = HotkeyModifiers.NoRepeat;
         uint virtualKey = 0;
+        var middleMouse = false;
         foreach (var part in parts)
         {
             switch (part.ToUpperInvariant())
             {
+                case "MMB":
+                case "MIDDLEMOUSE":
+                    if (middleMouse) { error = "The middle mouse button is repeated."; return false; }
+                    middleMouse = true;
+                    break;
                 case "CTRL":
                 case "CONTROL":
                     modifiers |= HotkeyModifiers.Control;
@@ -85,13 +92,13 @@ public static class HotkeyGestureParser
             }
         }
 
-        if (virtualKey == 0 || (modifiers & ~HotkeyModifiers.NoRepeat) == HotkeyModifiers.None)
+        if (!middleMouse && (virtualKey == 0 || (modifiers & ~HotkeyModifiers.NoRepeat) == HotkeyModifiers.None))
         {
             error = "A shortcut needs a modifier and one letter, digit, function key, or navigation key.";
             return false;
         }
 
-        gesture = new HotkeyGesture(modifiers, virtualKey);
+        gesture = new HotkeyGesture(modifiers, virtualKey, middleMouse);
         return true;
     }
 
@@ -106,6 +113,15 @@ public static class HotkeyGestureParser
             0x22 => "PageDown",
             0x23 => "End",
             0x24 => "Home",
+            0x25 => "Left",
+            0x26 => "Up",
+            0x27 => "Right",
+            0x28 => "Down",
+            0x2D => "Insert",
+            0x2E => "Delete",
+            0x09 => "Tab",
+            0x0D => "Enter",
+            0x08 => "Backspace",
             _ => $"VK_{virtualKey:X2}",
         };
 
@@ -133,6 +149,15 @@ public static class HotkeyGestureParser
             "PAGEDOWN" => 0x22,
             "END" => 0x23,
             "HOME" => 0x24,
+            "LEFT" => 0x25,
+            "UP" => 0x26,
+            "RIGHT" => 0x27,
+            "DOWN" => 0x28,
+            "INSERT" => 0x2D,
+            "DELETE" => 0x2E,
+            "TAB" => 0x09,
+            "ENTER" => 0x0D,
+            "BACKSPACE" => 0x08,
             _ => 0,
         };
         return virtualKey != 0;

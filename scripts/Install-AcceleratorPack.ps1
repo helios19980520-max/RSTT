@@ -63,8 +63,8 @@ foreach ($file in $manifest.files) {
 New-Item -ItemType Directory -Force -Path $targetWorkers | Out-Null
 $workerVersions = @(
     @{
-        Source = Join-Path $sourceWorkers 'sherpa-cuda12\1.13.4'
-        Target = Join-Path $targetWorkers 'sherpa-cuda12\1.13.4'
+        Source = Join-Path $sourceWorkers 'sherpa-cuda12\1.13.8'
+        Target = Join-Path $targetWorkers 'sherpa-cuda12\1.13.8'
     },
     @{
         Source = Join-Path $sourceWorkers 'whisper-cuda12\1.9.1'

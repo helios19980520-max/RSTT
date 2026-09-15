@@ -50,7 +50,7 @@ static async Task<int> RunAsync(string[] arguments)
                             SpeechWorkerProtocol.Version,
                             typeof(OnlineRecognizer).Assembly.GetName().Version?.ToString() ?? "unknown",
                             "sherpa-onnx",
-                            "sherpa-onnx 1.13.4",
+                            "sherpa-onnx 1.13.8",
                             Backend)).ConfigureAwait(false);
                     break;
                 case SpeechWorkerMessageType.Load:
@@ -71,6 +71,11 @@ static async Task<int> RunAsync(string[] arguments)
                 case SpeechWorkerMessageType.Start:
                     runtime.Start(SpeechWorkerProtocol.DeserializeJson<WorkerStartRequest>(frame));
                     await ReadyAsync(pipe, frame.CorrelationId, "start", "accepting audio").ConfigureAwait(false);
+                    break;
+                case SpeechWorkerMessageType.Activate:
+                    await ReplyJsonAsync(pipe, SpeechWorkerMessageType.Performance,
+                        frame.CorrelationId, runtime.Activate()).ConfigureAwait(false);
+                    await ReadyAsync(pipe, frame.CorrelationId, "activate", Backend).ConfigureAwait(false);
                     break;
                 case SpeechWorkerMessageType.Audio:
                 {
@@ -185,6 +190,9 @@ internal sealed class SherpaRuntime : IDisposable
     private string _lastText = string.Empty;
     private double _audioMilliseconds;
     private bool _started;
+    private CudaExecutionVerification? _verification;
+    private string Provider => _verification?.Provider ?? _backend;
+    private WorkerStreamingPolicy StreamingPolicy => _load?.StreamingPolicy ?? new();
 
     public SherpaRuntime(string backend)
     {
@@ -218,6 +226,10 @@ internal sealed class SherpaRuntime : IDisposable
         }
 
         _load = request;
+        if (_backend == "cuda" && request.EnableProviderDiagnostics)
+        {
+            _verification = new CudaExecutionVerification();
+        }
         if (IsOnline(request.Engine))
         {
             _online = new OnlineRecognizer(BuildOnlineConfig(request));
@@ -232,7 +244,9 @@ internal sealed class SherpaRuntime : IDisposable
     public WorkerPerformanceResponse Warmup()
     {
         EnsureLoaded();
-        var samples = new float[SampleRate];
+        // Buffered exports require more than one second to run even one decode.
+        var samples = new float[SampleRate * 3];
+        var inferenceCount = 0;
         var stopwatch = Stopwatch.StartNew();
         if (_online is not null)
         {
@@ -243,6 +257,7 @@ internal sealed class SherpaRuntime : IDisposable
             while (_online.IsReady(stream))
             {
                 _online.Decode(stream);
+                inferenceCount++;
             }
 
             _ = _online.GetResult(stream).Text;
@@ -253,14 +268,34 @@ internal sealed class SherpaRuntime : IDisposable
             ConfigureLanguage(stream);
             stream.AcceptWaveform(SampleRate, samples);
             _offline.Decode(stream);
+            inferenceCount++;
             _ = stream.Result.Text;
         }
 
         stopwatch.Stop();
+        if (inferenceCount == 0)
+        {
+            throw new InvalidOperationException("Warmup did not execute model inference.");
+        }
+
+        Console.Error.WriteLine("RSTT-WARMUP-COMPLETE");
+
         return new WorkerPerformanceResponse(
-            1_000,
+            3_000,
             stopwatch.Elapsed.TotalMilliseconds,
-            Environment.WorkingSet);
+            Environment.WorkingSet,
+            InferenceCount: inferenceCount,
+            ExecutionProvider: _backend);
+    }
+
+    public WorkerPerformanceResponse Activate()
+    {
+        EnsureLoaded();
+        // Identical model/provider configuration with verbose logging disabled.
+        // Validation runs once at load time, never in the live audio loop.
+        var request = _load! with { EnableProviderDiagnostics = false };
+        Load(request);
+        return Warmup();
     }
 
     public void Start(WorkerStartRequest request)
@@ -315,6 +350,8 @@ internal sealed class SherpaRuntime : IDisposable
         _vadAudioBuffer = null;
         _offline?.Dispose();
         _offline = null;
+        _verification?.Dispose();
+        _verification = null;
         _load = null;
         _lastText = string.Empty;
         _audioMilliseconds = 0;
@@ -326,10 +363,12 @@ internal sealed class SherpaRuntime : IDisposable
     {
         var hypotheses = new List<WorkerHypothesisResponse>();
         var stopwatch = Stopwatch.StartNew();
+        var inferenceCount = 0;
         _onlineStream!.AcceptWaveform(SampleRate, samples);
         while (_online!.IsReady(_onlineStream))
         {
             _online.Decode(_onlineStream);
+            inferenceCount++;
         }
 
         var result = _online.GetResult(_onlineStream).Text;
@@ -351,17 +390,23 @@ internal sealed class SherpaRuntime : IDisposable
         return new WorkerBatch(
             "audio",
             hypotheses,
-            Performance(stopwatch.Elapsed.TotalMilliseconds));
+            Performance(inferenceCount == 0 ? 0 : stopwatch.Elapsed.TotalMilliseconds,
+                inferenceCount: inferenceCount));
     }
 
     private WorkerBatch FinishOnline()
     {
         var hypotheses = new List<WorkerHypothesisResponse>();
         var stopwatch = Stopwatch.StartNew();
+        var inferenceCount = 0;
+        // Supply the export's right context without waiting for real silence.
+        _onlineStream!.AcceptWaveform(SampleRate,
+            new float[SampleRate * StreamingPolicy.TailPaddingMs / 1000]);
         _onlineStream!.InputFinished();
         while (_online!.IsReady(_onlineStream))
         {
             _online.Decode(_onlineStream);
+            inferenceCount++;
         }
 
         var result = _online.GetResult(_onlineStream).Text;
@@ -377,7 +422,8 @@ internal sealed class SherpaRuntime : IDisposable
         return new WorkerBatch(
             "finish",
             hypotheses,
-            Performance(stopwatch.Elapsed.TotalMilliseconds));
+            Performance(inferenceCount == 0 ? 0 : stopwatch.Elapsed.TotalMilliseconds,
+                inferenceCount: inferenceCount));
     }
 
     private WorkerBatch AcceptOffline(float[] samples, bool finish)
@@ -441,6 +487,7 @@ internal sealed class SherpaRuntime : IDisposable
             Performance(
                 decodeMilliseconds,
                 decodedAudioMilliseconds,
+                segmentCount,
                 segmentCount));
     }
 
@@ -455,15 +502,18 @@ internal sealed class SherpaRuntime : IDisposable
     private WorkerPerformanceResponse Performance(
         double decodeMilliseconds,
         double decodedAudioMilliseconds = 0,
-        int segmentCount = 0)
+        int segmentCount = 0,
+        int inferenceCount = 0)
     {
         var result = new WorkerPerformanceResponse(
             _audioMilliseconds,
             decodeMilliseconds,
             Environment.WorkingSet,
             decodedAudioMilliseconds,
-            segmentCount);
-        _audioMilliseconds = 0;
+            segmentCount,
+            inferenceCount,
+            inferenceCount > 0 ? _backend : string.Empty);
+        if (inferenceCount > 0) _audioMilliseconds = 0;
         return result;
     }
 
@@ -474,7 +524,7 @@ internal sealed class SherpaRuntime : IDisposable
         {
             Tokens = RequiredFile(files, "tokens"),
             NumThreads = Math.Clamp(request.Threads, 1, 16),
-            Provider = _backend,
+            Provider = Provider,
             Debug = 0,
         };
         switch (request.Engine.Trim().ToLowerInvariant())
@@ -512,12 +562,12 @@ internal sealed class SherpaRuntime : IDisposable
                 FeatureDim = request.FeatureDimension,
             },
             ModelConfig = model,
-            DecodingMethod = "greedy_search",
+            DecodingMethod = StreamingPolicy.DecodingMethod,
             MaxActivePaths = 4,
-            EnableEndpoint = 1,
+            EnableEndpoint = StreamingPolicy.EnableEndpoint ? 1 : 0,
             Rule1MinTrailingSilence = 2.4f,
-            Rule2MinTrailingSilence = 1.2f,
-            Rule3MinUtteranceLength = 20f,
+            Rule2MinTrailingSilence = StreamingPolicy.TrailingSilenceSeconds,
+            Rule3MinUtteranceLength = StreamingPolicy.MaximumUtteranceSeconds,
         };
     }
 
@@ -528,7 +578,7 @@ internal sealed class SherpaRuntime : IDisposable
         {
             Tokens = OptionalFile(files, "tokens"),
             NumThreads = Math.Clamp(request.Threads, 1, 16),
-            Provider = _backend,
+            Provider = Provider,
             Debug = 0,
         };
         switch (request.Engine.Trim().ToLowerInvariant())

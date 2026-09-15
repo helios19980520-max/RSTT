@@ -12,6 +12,9 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
 {
     private const int DecodeWindowSize = 256;
     private readonly Process _process = Process.GetCurrentProcess();
+    private readonly object _processGate = new();
+    private Process? _inferenceProcess;
+    private TimeSpan _lastInferenceCpuTime;
     private readonly object _decodeGate = new();
     private readonly double[] _decodeMilliseconds = new double[DecodeWindowSize];
     private readonly double[] _decodeAudioMilliseconds = new double[DecodeWindowSize];
@@ -59,6 +62,16 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
         if (!string.IsNullOrWhiteSpace(audioDevice))
         {
             Volatile.Write(ref _audioDevice, audioDevice);
+        }
+    }
+
+    public void SetInferenceProcess(int? processId)
+    {
+        lock (_processGate)
+        {
+            _inferenceProcess?.Dispose();
+            _inferenceProcess = processId is { } id ? Process.GetProcessById(id) : null;
+            _lastInferenceCpuTime = _inferenceProcess?.TotalProcessorTime ?? TimeSpan.Zero;
         }
     }
 
@@ -136,8 +149,28 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
         var elapsedSeconds = Math.Max(0.001, (now - _lastSnapshotAt).TotalSeconds);
         _process.Refresh();
         var cpuTime = _process.TotalProcessorTime;
+        var workerCpu = TimeSpan.Zero;
+        var workingSet = _process.WorkingSet64;
+        var threadCount = _process.Threads.Count;
+        lock (_processGate)
+        {
+            if (_inferenceProcess is { } worker)
+            {
+                try
+                {
+                    worker.Refresh();
+                    var workerTotalCpu = worker.TotalProcessorTime;
+                    workerCpu = workerTotalCpu - _lastInferenceCpuTime;
+                    _lastInferenceCpuTime = workerTotalCpu;
+                    workingSet += worker.WorkingSet64;
+                    threadCount += worker.Threads.Count;
+                }
+                catch (InvalidOperationException) { } // The worker may exit between snapshots.
+                catch (System.ComponentModel.Win32Exception) { }
+            }
+        }
         var processCpu = Math.Clamp(
-            (cpuTime - _lastCpuTime).TotalSeconds / elapsedSeconds / Environment.ProcessorCount * 100,
+            (cpuTime - _lastCpuTime + workerCpu).TotalSeconds / elapsedSeconds / Environment.ProcessorCount * 100,
             0,
             100);
         _lastSnapshotAt = now;
@@ -181,12 +214,12 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
         return new PerformanceSnapshot(
             now,
             processCpu,
-            _process.WorkingSet64,
+            workingSet,
             GC.GetTotalMemory(false),
             GC.CollectionCount(0),
             GC.CollectionCount(1),
             GC.CollectionCount(2),
-            _process.Threads.Count,
+            threadCount,
             audioCallbacks / elapsedSeconds,
             Volatile.Read(ref _audioQueueDepth),
             BitConverter.Int64BitsToDouble(Interlocked.Read(ref _audioQueueDurationBits)),
@@ -219,6 +252,7 @@ public sealed class PerformanceMonitor : IPerformanceMonitor, IDisposable
         }
 
         _disposed = true;
+        lock (_processGate) { _inferenceProcess?.Dispose(); }
         _process.Dispose();
     }
 }

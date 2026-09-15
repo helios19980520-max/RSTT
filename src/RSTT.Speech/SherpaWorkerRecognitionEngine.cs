@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Models;
+using RSTT.Core.Compute;
 
 namespace RSTT.Speech;
 
@@ -200,7 +201,7 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
             throw new InvalidOperationException("The selected model descriptor is missing.");
         _language = ResolveLanguage(descriptor, _settings.Current.DefaultLanguage);
         var requested = _settings.Current.DefaultBackend;
-        var candidates = ResolveCandidates(requested, descriptor);
+        var candidates = RecognitionSchedulingPolicy.Candidates(requested, descriptor.CudaSupported);
         Exception? cudaFailure = null;
         _compute.ResetRuntimeEvidence();
 
@@ -222,13 +223,14 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
                         candidate.Handshake.RuntimeVersion);
                 }
 
+                installation = await _models.GetSelectedInstallationAsync(backend, cancellationToken).ConfigureAwait(false);
                 installation = installation with
                 {
                     Provider = backend == ComputeBackend.Cuda ? "cuda" : "cpu",
                     NumThreads = ResolveThreadCount(installation, backend),
                 };
                 _ = await candidate
-                    .LoadAsync(installation, _language, cancellationToken)
+                    .LoadAsync(installation, _language, cancellationToken, _settings.Current.RecognitionMode)
                     .ConfigureAwait(false);
                 if (backend == ComputeBackend.Cuda)
                 {
@@ -245,10 +247,15 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
                     .ConfigureAwait(false);
                 if (backend == ComputeBackend.Cuda)
                 {
+                    if (warmup.Performance is not { InferenceCount: > 0, ExecutionProvider: "cuda" })
+                    {
+                        throw new InvalidOperationException("The CUDA worker did not verify model inference.");
+                    }
+
                     Report(
                         ComputeReadinessLayer.Warmup,
                         ComputeLayerState.Ready,
-                        $"CUDA warmup decode passed in {warmup.Performance?.DecodeMilliseconds:N1} ms.",
+                        $"CUDA warmup decoded in {warmup.Performance.DecodeMilliseconds:N1} ms. {warmup.Performance.DeviceEvidence}",
                         descriptor.Id,
                         candidate.Handshake.RuntimeVersion);
                     Report(
@@ -260,6 +267,13 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
                 }
 
                 _client = candidate;
+                _performance.SetInferenceProcess(candidate.ProcessId);
+                if (backend == ComputeBackend.Cpu)
+                {
+                    _compute.ReportRuntimeEvidence(new ComputeRuntimeEvidence(
+                        ComputeBackend.Cpu, ComputeReadinessLayer.Warmup, ComputeLayerState.Ready,
+                        cudaFailure is null ? "CPU model warmup passed." : $"CPU fallback: {cudaFailure.Message}", descriptor.Id));
+                }
                 candidate = null;
                 ModelInformation = installation.Information;
                 _workerSessionStarted = false;
@@ -276,10 +290,10 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
                 return;
             }
             catch (Exception exception) when (
-                backend == ComputeBackend.Cuda &&
-                requested == ComputeBackend.Auto)
+                backend == ComputeBackend.Cuda && !cancellationToken.IsCancellationRequested)
             {
                 cudaFailure = exception;
+                LogCudaFallback(_logger, exception);
                 Report(
                     ComputeReadinessLayer.ProviderLoad,
                     ComputeLayerState.Failed,
@@ -321,12 +335,12 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
     private void PublishBatch(WorkerBatchResult result)
     {
         if (result.Performance is { } performance &&
-            performance.DecodeMilliseconds > 0)
+            performance.InferenceCount > 0)
         {
             _performance.RecordDecode(
                 TimeSpan.FromMilliseconds(performance.DecodeMilliseconds),
                 performance.AudioMilliseconds);
-            if (!_cudaActive && _client?.Backend == ComputeBackend.Cuda)
+            if (!_cudaActive && performance.ExecutionProvider == "cuda" && _client?.Backend == ComputeBackend.Cuda)
             {
                 _cudaActive = true;
                 _performance.SetSessionContext(
@@ -365,6 +379,7 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
 
     private async Task DisposeClientUnsafeAsync()
     {
+        _performance.SetInferenceProcess(null);
         _started = false;
         _workerSessionStarted = false;
         _cudaActive = false;
@@ -407,26 +422,9 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
                 Math.Min(8, Environment.ProcessorCount));
         }
 
-        return Math.Clamp(
-            installation.NumThreads,
-            1,
-            Math.Min(4, Environment.ProcessorCount));
+        return Math.Clamp(_settings.Current.RecognitionMode == RecognitionMode.LowPower ? 2 : 4,
+            1, Environment.ProcessorCount);
     }
-
-    private static IReadOnlyList<ComputeBackend> ResolveCandidates(
-        ComputeBackend requested,
-        ModelDescriptor descriptor) =>
-        requested switch
-        {
-            ComputeBackend.Cpu => [ComputeBackend.Cpu],
-            ComputeBackend.Cuda when !descriptor.CudaSupported =>
-                throw new InvalidOperationException(
-                    $"{descriptor.DisplayName} does not support CUDA."),
-            ComputeBackend.Cuda => [ComputeBackend.Cuda],
-            _ when descriptor.CudaSupported =>
-                [ComputeBackend.Cuda, ComputeBackend.Cpu],
-            _ => [ComputeBackend.Cpu],
-        };
 
     private static string ResolveLanguage(
         ModelDescriptor descriptor,
@@ -451,6 +449,11 @@ public abstract partial class SherpaWorkerRecognitionEngine : ISpeechRecognition
 
     private void ThrowIfDisposed() =>
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+    [LoggerMessage(
+        LogLevel.Warning,
+        "CUDA initialization failed; using CPU. See exception for the runtime/model failure.")]
+    private static partial void LogCudaFallback(ILogger logger, Exception exception);
 
     [LoggerMessage(
         LogLevel.Information,

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using RSTT.Core.Abstractions;
 using RSTT.Core.Models;
+using RSTT.Core.Compute;
 using RSTT.Core.Workers;
 
 namespace RSTT.Speech;
@@ -203,7 +204,7 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
         var candidates = requested switch
         {
             ComputeBackend.Cpu => new[] { ComputeBackend.Cpu },
-            ComputeBackend.Cuda => new[] { ComputeBackend.Cuda },
+            ComputeBackend.Cuda => new[] { ComputeBackend.Cuda, ComputeBackend.Cpu },
             _ => new[] { ComputeBackend.Cuda, ComputeBackend.Cpu },
         };
         Exception? lastFailure = null;
@@ -232,11 +233,11 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                         RequiredFile(installation.Files, "vad"),
                         language,
                         installation.NumThreads,
-                        new WorkerVadPolicy(
+                        RecognitionSchedulingPolicy.Vad(_settings.Current.RecognitionMode, new WorkerVadPolicy(
                             policy.PreRollMs,
                             policy.PostRollMs,
                             policy.MaximumSegmentMs,
-                            policy.Threshold),
+                            policy.Threshold)),
                         cancellationToken)
                     .ConfigureAwait(false);
                 if (backend == ComputeBackend.Cuda)
@@ -267,11 +268,18 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                 }
 
                 _worker = candidate;
+                _performance.SetInferenceProcess(candidate.ProcessId);
+                if (backend == ComputeBackend.Cpu)
+                {
+                    _compute.ReportRuntimeEvidence(new ComputeRuntimeEvidence(
+                        ComputeBackend.Cpu, ComputeReadinessLayer.Warmup, ComputeLayerState.Ready,
+                        lastFailure is null ? "CPU model warmup passed." : $"CPU fallback: {lastFailure.Message}", descriptor.Id));
+                }
                 candidate = null;
                 break;
             }
             catch (Exception exception) when (
-                requested == ComputeBackend.Auto &&
+                !cancellationToken.IsCancellationRequested &&
                 backend == ComputeBackend.Cuda)
             {
                 lastFailure = exception;
@@ -286,6 +294,11 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
                     $"Whisper CUDA verification failed; CPU fallback selected: {exception.Message}",
                     descriptor.Id);
                 LogCudaFallback(_logger, exception.Message);
+            }
+            catch
+            {
+                if (candidate is not null) await candidate.DisposeAsync().ConfigureAwait(false);
+                throw;
             }
         }
 
@@ -370,6 +383,7 @@ public sealed partial class WhisperCppEngine : ISpeechRecognitionEngine
 
     private async Task DisposeWorkerUnsafeAsync()
     {
+        _performance.SetInferenceProcess(null);
         _started = false;
         _workerSessionStarted = false;
         _cudaActive = false;

@@ -52,7 +52,7 @@ public sealed class JsonSettingsServiceTests
             await service.LoadAsync();
 
             Assert.Equal(LocalModelManager.DefaultModelId, service.Current.SpeechModel);
-            Assert.True(service.Current.TextInjectionEnabled);
+        Assert.False(service.Current.TextInjectionEnabled);
         }
         finally
         {

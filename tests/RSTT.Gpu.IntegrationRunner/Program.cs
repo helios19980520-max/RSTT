@@ -1,8 +1,13 @@
 using System.Diagnostics;
 using System.Text.Json;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 using RSTT.Core.Models;
+using RSTT.Core.Transcription;
+using RSTT.Core.Compute;
+using RSTT.Core.Workers;
 using RSTT.Speech;
+using RSTT.Audio;
 
 return await RunAsync(args).ConfigureAwait(false);
 
@@ -30,6 +35,15 @@ static async Task<int> RunAsync(string[] args)
         }
 
         var samples = ReadMono16Khz(audioPath);
+        var mode = Enum.Parse<RecognitionMode>(OptionalArgument(args, "--mode") ?? "Accuracy", true);
+        if (OptionalArgument(args, "--seconds") is { } seconds)
+            samples = samples[..Math.Min(samples.Length, int.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture) * AudioChunk.SampleRate)];
+        var streaming = RecognitionSchedulingPolicy.Streaming(mode) with
+        {
+            EnableEndpoint = args.Contains("--endpoints", StringComparer.Ordinal),
+            DecodingMethod = OptionalArgument(args, "--decoder") ?? "greedy_search",
+        };
+        var threads = int.Parse(OptionalArgument(args, "--threads") ?? "2", System.Globalization.CultureInfo.InvariantCulture);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         var report = engine switch
         {
@@ -38,6 +52,10 @@ static async Task<int> RunAsync(string[] args)
                 modelDirectory,
                 samples,
                 workerRoot,
+                mode,
+                streaming,
+                threads,
+                args.Contains("--realtime", StringComparer.Ordinal),
                 timeout.Token).ConfigureAwait(false),
             "whisper" => await RunWhisperAsync(
                 backend,
@@ -64,6 +82,10 @@ static async Task<GpuValidationReport> RunSherpaAsync(
     string modelDirectory,
     float[] samples,
     string? workerRoot,
+    RecognitionMode mode,
+    WorkerStreamingPolicy streaming,
+    int threads,
+    bool realtime,
     CancellationToken cancellationToken)
 {
     var manifest = ReadManifest(modelDirectory);
@@ -94,7 +116,7 @@ static async Task<GpuValidationReport> RunSherpaAsync(
         information,
         manifest.Engine,
         files,
-        manifest.NumThreads,
+        threads,
         backend == ComputeBackend.Cuda ? "cuda" : "cpu",
         manifest.FeatureDimension,
         Descriptor: descriptor);
@@ -104,7 +126,7 @@ static async Task<GpuValidationReport> RunSherpaAsync(
         .StartAsync(backend, cancellationToken, workerRoot)
         .ConfigureAwait(false);
     var loadStopwatch = Stopwatch.StartNew();
-    _ = await worker.LoadAsync(installation, "en", cancellationToken).ConfigureAwait(false);
+    _ = await worker.LoadAsync(installation, "en", cancellationToken, mode, streaming).ConfigureAwait(false);
     loadStopwatch.Stop();
     var warmup = await worker.WarmupAsync(cancellationToken).ConfigureAwait(false);
     await worker.StartSessionAsync(new SessionGenerationId(1), 0, cancellationToken)
@@ -114,20 +136,46 @@ static async Task<GpuValidationReport> RunSherpaAsync(
     var decodedAudioMilliseconds = 0d;
     var segmentCount = 0;
     var peakWorkingSet = 0L;
-    const int chunkSamples = 8_960;
+    var chunkSamples = realtime ? 160 : 8_960;
     var sequence = 0L;
-    for (var offset = 0; offset < samples.Length; offset += chunkSamples)
+    var queue = new AudioChunkQueue();
+    var sessionClock = Stopwatch.StartNew();
+    var peakQueuedMs = 0d;
+    var firstTextMs = 0d;
+    var producer = Task.Run(async () =>
     {
-        var length = Math.Min(chunkSamples, samples.Length - offset);
-        var chunk = new float[length];
-        Array.Copy(samples, offset, chunk, 0, length);
+        try
+        {
+            for (var offset = 0; offset < samples.Length; offset += chunkSamples)
+            {
+                if (realtime)
+                {
+                    var due = TimeSpan.FromSeconds((double)offset / AudioChunk.SampleRate) - sessionClock.Elapsed;
+                    if (due > TimeSpan.Zero) await Task.Delay(due, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    // Fast benchmarks still use bounded memory; never feed the
+                    // entire multi-minute file ahead of an overloaded worker.
+                    while (queue.QueuedSamples > AudioChunk.SampleRate * 2)
+                        await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                }
+                var length = Math.Min(chunkSamples, samples.Length - offset);
+                var block = samples.AsSpan(offset, length).ToArray();
+                queue.Write(new AudioChunk(++sequence, DateTimeOffset.UtcNow, block, new SessionGenerationId(1)));
+            }
+            queue.Complete();
+        }
+        catch (Exception exception) { queue.Complete(exception); throw; }
+    }, cancellationToken);
+    await foreach (var chunk in queue.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+    {
+        peakQueuedMs = Math.Max(peakQueuedMs, queue.QueuedSamples * 1000d / AudioChunk.SampleRate);
+        queue.Acknowledge(chunk);
         var result = await worker.ProcessAudioAsync(
-            new AudioChunk(
-                ++sequence,
-                DateTimeOffset.UtcNow,
-                chunk,
-                new SessionGenerationId(1)),
+            chunk,
             cancellationToken).ConfigureAwait(false);
+        if (firstTextMs == 0 && result.Hypotheses.Count > 0) firstTextMs = sessionClock.Elapsed.TotalMilliseconds;
         hypotheses.AddRange(result.Hypotheses);
         if (result.Performance is { } performance)
         {
@@ -137,6 +185,7 @@ static async Task<GpuValidationReport> RunSherpaAsync(
             peakWorkingSet = Math.Max(peakWorkingSet, performance.WorkingSetBytes);
         }
     }
+    await producer.ConfigureAwait(false);
 
     var final = await worker.FinishAsync(cancellationToken).ConfigureAwait(false);
     hypotheses.AddRange(final.Hypotheses);
@@ -149,21 +198,13 @@ static async Task<GpuValidationReport> RunSherpaAsync(
     }
 
     total.Stop();
-    var transcription = string.Empty;
-    for (var index = hypotheses.Count - 1; index >= 0; index--)
-    {
-        if (hypotheses[index].IsFinal &&
-            !string.IsNullOrWhiteSpace(hypotheses[index].Text))
-        {
-            transcription = hypotheses[index].Text;
-            break;
-        }
-    }
-
-    if (transcription.Length == 0 && hypotheses.Count > 0)
-    {
-        transcription = hypotheses[^1].Text;
-    }
+    // Keep every endpoint, not just the final sentence of the recording.
+    var transcription = string.Join(' ', hypotheses.Where(h => h.IsFinal).Select(h => h.Text));
+    var stable = new TranscriptStabilizer(new TextFormattingPolicy());
+    var pending = new PendingPasteBuffer();
+    foreach (var hypothesis in hypotheses)
+        pending.Apply(stable.Process(new RecognitionHypothesis(new SessionGenerationId(1),
+            hypothesis.SequenceId, hypothesis.Text, hypothesis.IsFinal, DateTimeOffset.UtcNow, "en", manifest.Id)));
 
     return new GpuValidationReport(
         "sherpa-onnx",
@@ -179,7 +220,12 @@ static async Task<GpuValidationReport> RunSherpaAsync(
         total.Elapsed.TotalMilliseconds,
         transcription,
         decodedAudioMilliseconds,
-        segmentCount);
+        segmentCount,
+        warmup.Performance?.DeviceEvidence ?? string.Empty,
+        pending.Snapshot().Text,
+        hypotheses,
+        peakQueuedMs,
+        firstTextMs);
 }
 
 static async Task<GpuValidationReport> RunWhisperAsync(
@@ -239,21 +285,19 @@ static ModelManifest ReadManifest(string directory)
 
 static float[] ReadMono16Khz(string path)
 {
-    using var reader = new WaveFileReader(path);
-    if (reader.WaveFormat.SampleRate != AudioChunk.SampleRate ||
-        reader.WaveFormat.Channels != 1)
-    {
-        throw new InvalidDataException(
-            $"Validation WAV must be 16 kHz mono; detected {reader.WaveFormat}.");
-    }
-
-    var provider = reader.ToSampleProvider();
-    var result = new List<float>((int)(reader.Length / Math.Max(1, reader.BlockAlign)));
-    var buffer = new float[AudioChunk.SampleRate];
+    using var reader = new AudioFileReader(path);
+    // Exercise the app's real stereo/48 kHz capture conversion without playing
+    // test audio into other applications or recording unrelated system sound.
+    var provider = new WdlResamplingSampleProvider(reader, 48000);
+    var converter = new Pcm16kMonoConverter();
+    var result = new List<float>();
+    var buffer = new float[480 * provider.WaveFormat.Channels];
+    var bytes = new byte[buffer.Length * sizeof(float)];
     int read;
     while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
     {
-        result.AddRange(buffer.AsSpan(0, read).ToArray());
+        Buffer.BlockCopy(buffer, 0, bytes, 0, read * sizeof(float));
+        result.AddRange(converter.Process(bytes, read * sizeof(float), provider.WaveFormat));
     }
 
     return result.ToArray();
@@ -315,4 +359,9 @@ internal sealed record GpuValidationReport(
     double TotalMilliseconds,
     string Transcription,
     double DecodedAudioMilliseconds = 0,
-    int SegmentCount = 0);
+    int SegmentCount = 0,
+    string DeviceEvidence = "",
+    string StablePrefixTranscript = "",
+    IReadOnlyList<RSTT.Core.Workers.WorkerHypothesisResponse>? Hypotheses = null,
+    double PeakQueuedAudioMilliseconds = 0,
+    double FirstTextMilliseconds = 0);

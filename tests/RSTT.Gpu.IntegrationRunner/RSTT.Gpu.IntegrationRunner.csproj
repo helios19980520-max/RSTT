@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\RSTT.Core\RSTT.Core.csproj" />
+    <ProjectReference Include="..\..\src\RSTT.Audio\RSTT.Audio.csproj" />
     <ProjectReference Include="..\..\src\RSTT.Speech\RSTT.Speech.csproj" />
     <PackageReference Include="NAudio" />
   </ItemGroup>
