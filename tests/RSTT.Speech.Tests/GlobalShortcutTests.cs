@@ -13,7 +13,18 @@ namespace RSTT.Speech.Tests;
 [Collection(NativeInputTestGroup.Name)]
 public sealed class GlobalShortcutTests
 {
-    private static readonly string[] RecordedGestures = ["Ctrl+Alt+Shift+F22", "Ctrl+MMB", "MMB+B"];
+    private static readonly (string Recorded, string Saved)[] RecordedGestures =
+    [
+        ("Ctrl+Alt+Shift+F22", "Ctrl+Alt+Shift+F22"),
+        ("Ctrl+MMB", "Ctrl+MMB"),
+        ("MMB+B", "MMB+B"),
+        ("K", "K"),
+        ("9", "9"),
+        ("[", "["),
+        ("VK_DC", "\\"),
+        ("VK_6B", "NumPadAdd"),
+        ("Ctrl+VK_6B", "Ctrl+NumPadAdd"),
+    ];
     [Fact]
     public Task ConfirmClosesTheRealRecorderWithoutClosingAgainOnDeactivation() => RunSta(() =>
     {
@@ -47,11 +58,11 @@ public sealed class GlobalShortcutTests
                 dialog.Loaded += (_, _) =>
                 {
                     typeof(RSTT.App.ShortcutRecorderWindow).GetMethod("OnRecorded", BindingFlags.Instance | BindingFlags.NonPublic)!
-                        .Invoke(dialog, [null, gesture]);
+                        .Invoke(dialog, [null, gesture.Recorded]);
                     ((Button)dialog.FindName("ConfirmButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 };
                 Assert.True(dialog.ShowDialog());
-                Assert.Equal(gesture, shortcuts.GetGesture(RsttHotkey.PasteRecognizedSentences));
+                Assert.Equal(gesture.Saved, shortcuts.GetGesture(RsttHotkey.PasteRecognizedSentences));
                 Assert.False(shortcuts.IsRecording);
             }
         }
@@ -76,11 +87,40 @@ public sealed class GlobalShortcutTests
             Assert.True(second.TryReplace(RsttHotkey.ToggleCaptionOverlay, "Ctrl+Alt+Shift+F20", out error), error);
             Assert.False(first.TryReplace(RsttHotkey.PasteRecognizedSentences, "Ctrl+Alt+Shift+F21", out error));
             Assert.Contains("already assigned", error);
-            Assert.False(first.TryReplace(RsttHotkey.ToggleListening, "K", out _));
+            Assert.False(first.TryReplace(RsttHotkey.ToggleListening, "Ctrl", out _));
             Assert.Equal("Ctrl+Alt+Shift+F21", first.GetGesture(RsttHotkey.ToggleListening));
             Assert.True(first.TryReplace(RsttHotkey.ToggleListening, "", out _));
             Assert.Empty(first.GetGesture(RsttHotkey.ToggleListening));
             Assert.True(second.TryReplace(RsttHotkey.ToggleCaptionOverlay, "Ctrl+Alt+Shift+F21", out error), error);
+        }
+        finally { firstWindow.Close(); secondWindow.Close(); }
+    });
+
+    [Fact]
+    public Task SpecialKeyAliasesShareWindowsRegistrationsAndKeepNumpadDistinct() => RunSta(() =>
+    {
+        var firstWindow = new Window();
+        var secondWindow = new Window();
+        using var first = new GlobalHotkeyManager(firstWindow, NullLogger<GlobalHotkeyManager>.Instance);
+        using var second = new GlobalHotkeyManager(secondWindow, NullLogger<GlobalHotkeyManager>.Instance);
+        _ = new WindowInteropHelper(firstWindow).EnsureHandle();
+        _ = new WindowInteropHelper(secondWindow).EnsureHandle();
+        try
+        {
+            Assert.True(first.TryReplace(RsttHotkey.ToggleListening, "VK_6B", out var error), error);
+            Assert.Equal("NumPadAdd", first.GetGesture(RsttHotkey.ToggleListening));
+            Assert.False(second.TryReplace(RsttHotkey.ToggleListening, "NumPadAdd", out error));
+            Assert.Contains("another application", error);
+            Assert.False(first.TryReplace(RsttHotkey.PasteRecognizedSentences, "NumPadAdd", out error));
+            Assert.Contains("already assigned", error);
+
+            // OEM plus and numpad addition may be assigned at the same time.
+            Assert.True(second.TryReplace(RsttHotkey.ToggleListening, "+", out error), error);
+            Assert.True(first.TryReplace(RsttHotkey.ToggleListening, "\\", out error), error);
+            Assert.False(second.TryReplace(RsttHotkey.ToggleListening, "VK_DC", out error));
+            Assert.Equal("Plus", second.GetGesture(RsttHotkey.ToggleListening));
+            Assert.True(first.TryReplace(RsttHotkey.ToggleListening, "", out error), error);
+            Assert.True(second.TryReplace(RsttHotkey.ToggleListening, "VK_DC", out error), error);
         }
         finally { firstWindow.Close(); secondWindow.Close(); }
     });

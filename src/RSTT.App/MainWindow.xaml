@@ -894,7 +894,7 @@
                                 <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                                     <StackPanel>
                                         <TextBlock Text="Global shortcuts" Style="{StaticResource SectionTitle}" />
-                                        <TextBlock Text="Record a keyboard shortcut, MMB, or hold MMB and press a key. Confirm to save. Clear disables an action."
+                                        <TextBlock Text="Record a single key or a combination, including punctuation and numpad keys. MMB and MMB + key also work. Confirm to save; Clear disables an action."
                                                    Style="{StaticResource MutedBody}" FontSize="11" Margin="0,5,0,0" />
                                         <Grid Margin="0,20,0,0">
                                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="350" /></Grid.ColumnDefinitions>

@@ -32,7 +32,7 @@ public sealed class ArchitectureHardeningTests
 
     [Theory]
     [InlineData("")]
-    [InlineData("R")]
+    [InlineData("Ctrl")]
     [InlineData("Ctrl+Alt+VolumeUp")]
     [InlineData("Ctrl+R+T")]
     public void HotkeyParserRejectsAmbiguousOrUnsupportedValues(string value)

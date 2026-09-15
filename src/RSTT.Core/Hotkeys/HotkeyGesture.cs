@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace RSTT.Core.Hotkeys;
 
 [Flags]
@@ -48,10 +50,18 @@ public static class HotkeyGestureParser
     {
         gesture = default!;
         error = string.Empty;
-        var parts = value?.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
-        if (parts.Length == 0)
+        var text = value?.Trim() ?? string.Empty;
+        // '+' separates modifiers, but may also name the main keyboard's plus
+        // key. Canonical output uses "Plus"; numpad addition is "NumPadAdd".
+        if (text.EndsWith('+'))
         {
-            error = "Use at least one modifier plus a key, for example Ctrl+Alt+R.";
+            var prefix = text[..^1].TrimEnd();
+            if (prefix.Length == 0 || prefix.EndsWith('+')) text = prefix + "Plus";
+        }
+        var parts = text.Split('+', StringSplitOptions.TrimEntries);
+        if (parts.Any(string.IsNullOrEmpty))
+        {
+            error = "Choose a key, such as K, 9, [, or NumPadAdd. Modifiers are optional.";
             return false;
         }
 
@@ -92,9 +102,9 @@ public static class HotkeyGestureParser
             }
         }
 
-        if (!middleMouse && (virtualKey == 0 || (modifiers & ~HotkeyModifiers.NoRepeat) == HotkeyModifiers.None))
+        if (!middleMouse && virtualKey == 0)
         {
-            error = "A shortcut needs a modifier and one letter, digit, function key, or navigation key.";
+            error = "Choose a letter, digit, punctuation, numpad, function, or navigation key. Modifiers are optional.";
             return false;
         }
 
@@ -107,7 +117,25 @@ public static class HotkeyGestureParser
         {
             >= 0x41 and <= 0x5A => ((char)virtualKey).ToString(),
             >= 0x30 and <= 0x39 => ((char)virtualKey).ToString(),
+            >= 0x60 and <= 0x69 => $"NumPad{virtualKey - 0x60}",
             >= 0x70 and <= 0x87 => $"F{virtualKey - 0x6F}",
+            0x6A => "NumPadMultiply",
+            0x6B => "NumPadAdd",
+            0x6C => "NumPadSeparator",
+            0x6D => "NumPadSubtract",
+            0x6E => "NumPadDecimal",
+            0x6F => "NumPadDivide",
+            0xBA => ";",
+            0xBB => "Plus",
+            0xBC => ",",
+            0xBD => "-",
+            0xBE => ".",
+            0xBF => "/",
+            0xC0 => "`",
+            0xDB => "[",
+            0xDC => "\\",
+            0xDD => "]",
+            0xDE => "'",
             0x20 => "Space",
             0x21 => "PageUp",
             0x22 => "PageDown",
@@ -128,9 +156,23 @@ public static class HotkeyGestureParser
     private static bool TryParseVirtualKey(string value, out uint virtualKey)
     {
         var normalized = value.Trim().ToUpperInvariant();
+        if (normalized.StartsWith("VK_", StringComparison.Ordinal))
+        {
+            return uint.TryParse(normalized.AsSpan(3), NumberStyles.AllowHexSpecifier,
+                CultureInfo.InvariantCulture, out virtualKey) &&
+                (virtualKey is 0xDF or 0xE2 ||
+                 !FormatVirtualKey(virtualKey).StartsWith("VK_", StringComparison.Ordinal));
+        }
         if (normalized.Length == 1 && char.IsAsciiLetterOrDigit(normalized[0]))
         {
             virtualKey = normalized[0];
+            return true;
+        }
+
+        if (normalized.Length == 7 && normalized.StartsWith("NUMPAD", StringComparison.Ordinal) &&
+            char.IsAsciiDigit(normalized[6]))
+        {
+            virtualKey = (uint)(0x60 + normalized[6] - '0');
             return true;
         }
 
@@ -144,6 +186,23 @@ public static class HotkeyGestureParser
 
         virtualKey = normalized switch
         {
+            "NUMPADMULTIPLY" or "MULTIPLY" => 0x6A,
+            "NUMPADADD" or "ADD" => 0x6B,
+            "NUMPADSEPARATOR" or "SEPARATOR" => 0x6C,
+            "NUMPADSUBTRACT" or "SUBTRACT" => 0x6D,
+            "NUMPADDECIMAL" or "DECIMAL" => 0x6E,
+            "NUMPADDIVIDE" or "DIVIDE" => 0x6F,
+            ";" => 0xBA,
+            "PLUS" or "=" => 0xBB,
+            "," => 0xBC,
+            "-" => 0xBD,
+            "." => 0xBE,
+            "/" => 0xBF,
+            "`" => 0xC0,
+            "[" => 0xDB,
+            "\\" => 0xDC,
+            "]" => 0xDD,
+            "'" => 0xDE,
             "SPACE" => 0x20,
             "PAGEUP" => 0x21,
             "PAGEDOWN" => 0x22,

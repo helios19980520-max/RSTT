@@ -102,7 +102,7 @@ measured GPU results, remaining model limits, and validation details.
 | `MMB` | Paste Recognized Sentences |
 | `Ctrl+Alt+C` | Show/hide captions |
 
-Click **Record Shortcut**, press a keyboard combination or MMB (including MMB+B),
+Click **Record Shortcut**, press a single key, keyboard combination, or MMB (including MMB+B),
 and click **Confirm**. Cancel, Reset, and Clear are available. Clear disables the
 binding. Keyboard conflicts and duplicate RSTT bindings preserve the old shortcut.
 
