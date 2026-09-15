@@ -6,7 +6,7 @@
         Background="{StaticResource WindowBackground}" Foreground="{StaticResource PrimaryText}">
     <StackPanel Margin="24">
         <TextBlock Text="Press your shortcut" Style="{StaticResource SectionTitle}" />
-        <TextBlock Text="Press a modifier + key, MMB, or hold MMB and press a key. Release the keys, then click Confirm. Escape cancels."
+        <TextBlock Text="Press a key (letter, digit, punctuation, or numpad), with or without modifiers. MMB and MMB + key also work. Release the keys, then click Confirm. Escape cancels."
                    Style="{StaticResource MutedBody}" TextWrapping="Wrap" Margin="0,12,0,0" />
         <Border Style="{StaticResource Card}" Margin="0,18,0,0">
             <TextBlock x:Name="DetectedShortcut" Text="Waiting for input…" FontSize="20" FontWeight="SemiBold" />
