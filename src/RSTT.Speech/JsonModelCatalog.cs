@@ -72,7 +72,7 @@ public sealed class JsonModelCatalog : IModelCatalog
                 errors.Add($"{model.Id} has an incomplete actionable integration");
             }
 
-            foreach (var artifact in model.Artifacts)
+            foreach (var artifact in model.Artifacts.Concat(model.CudaVariant?.Artifacts ?? []))
             {
                 if (!Uri.TryCreate(artifact.SourceUrl, UriKind.Absolute, out var uri) ||
                     uri.Scheme != Uri.UriSchemeHttps ||

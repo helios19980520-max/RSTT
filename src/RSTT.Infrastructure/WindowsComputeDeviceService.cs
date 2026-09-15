@@ -183,18 +183,22 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 requested != ComputeBackend.Cpu,
                 "No model was supplied for backend selection.")
             : await SelectAsync(requested, model, cancellationToken).ConfigureAwait(false);
-        var active = layers.Any(layer =>
-            layer.Layer == ComputeReadinessLayer.ActiveInference &&
-            layer.State == ComputeLayerState.Active);
+        ComputeRuntimeEvidence? inference;
+        ComputeRuntimeEvidence? warmup;
+        lock (_evidenceGate)
+        {
+            _runtimeEvidence.TryGetValue(ComputeReadinessLayer.ActiveInference, out inference);
+            _runtimeEvidence.TryGetValue(ComputeReadinessLayer.Warmup, out warmup);
+        }
+        var runtime = inference?.State == ComputeLayerState.Active ? inference : warmup;
+        var verified = runtime?.IsReady == true;
         return new ComputeDiagnosticsReport(
             layers,
             requested,
-            active ? ComputeBackend.Cuda : selection.Selected,
-            active
-                ? "CUDA Active"
-                : selection.Selected == ComputeBackend.Cuda
-                    ? "CUDA Ready (decode not yet verified)"
-                : "CPU Active");
+            verified ? runtime!.Backend : selection.Selected,
+            verified
+                ? $"{(runtime!.Backend == ComputeBackend.Cuda ? "CUDA" : "CPU")} {(inference?.State == ComputeLayerState.Active ? "Active" : "verified · ready")}. {warmup?.Status}"
+                : "Inference device not yet verified");
     }
 
     public void ReportRuntimeEvidence(ComputeRuntimeEvidence evidence)
@@ -211,6 +215,7 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
 
     public void ResetRuntimeEvidence()
     {
+        _cached = null;
         lock (_evidenceGate)
         {
             _runtimeEvidence.Clear();
@@ -225,7 +230,7 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
             AppContext.BaseDirectory,
             "workers",
             "sherpa-cuda12",
-            "1.13.4");
+            "1.13.8");
         var cudaWorkerPath = Path.Combine(workerRoot, "RSTT.Speech.Worker.exe");
         var whisperWorkerRoot = Path.Combine(
             AppContext.BaseDirectory,
@@ -318,11 +323,11 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 workerExists
                     ? "The versioned sherpa CUDA worker is installed."
                     : "The optional RSTT CUDA Accelerator Pack is not installed.",
-                workerExists ? "sherpa-onnx 1.13.4" : string.Empty,
+                workerExists ? "sherpa-onnx 1.13.8" : string.Empty,
                 workerExists
                     ? ComputeLayerState.Ready
                     : ComputeLayerState.Missing,
-                "sherpa-onnx 1.13.4 / CUDA 12.x",
+                "sherpa-onnx 1.13.8 / CUDA 12.x",
                 workerExists ? cudaWorkerPath : string.Empty,
                 workerExists ? SherpaCudaUrl : AcceleratorPackUrl),
             new(
@@ -385,7 +390,7 @@ public sealed class WindowsComputeDeviceService : IComputeDeviceService
                 AppContext.BaseDirectory,
                 "workers",
                 "sherpa-cuda12",
-                "1.13.4",
+                "1.13.8",
                 "RSTT.Speech.Worker.exe");
     }
 

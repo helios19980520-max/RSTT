@@ -25,6 +25,7 @@ internal sealed class WhisperWorkerClient : IAsyncDisposable
     }
 
     public ComputeBackend Backend { get; }
+    public int ProcessId => _process.Id;
 
     public WorkerHandshakeResponse Handshake { get; }
 

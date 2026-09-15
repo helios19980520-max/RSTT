@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\RSTT.Sherpa.Worker\Program.cs" Link="Program.cs" />
+    <Compile Include="..\RSTT.Sherpa.Worker\CudaExecutionVerification.cs" Link="CudaExecutionVerification.cs" />
     <ProjectReference Include="..\RSTT.Core\RSTT.Core.csproj" />
     <PackageReference Include="org.k2fsa.sherpa.onnx" />
   </ItemGroup>

@@ -10,7 +10,7 @@ namespace RSTT.App.Services;
 public enum RsttHotkey
 {
     ToggleListening,
-    ToggleTextInjection,
+    PasteRecognizedSentences,
     ToggleCaptionOverlay,
 }
 
@@ -83,7 +83,7 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         {
             return _registrations.TryGetValue(hotkey, out var registration)
                 ? registration.Gesture.ToString()
-                : GetDefaultGesture(hotkey);
+                : string.Empty;
         }
     }
 
@@ -93,6 +93,16 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         out string failureMessage)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(gesture))
+        {
+            lock (_gate)
+            {
+                if (_registrations.Remove(hotkey, out var disabled)) ReleaseRegistration(disabled);
+            }
+            failureMessage = string.Empty;
+            return true;
+        }
+
         if (!HotkeyGestureParser.TryParse(
                 gesture,
                 out var parsed,
@@ -129,7 +139,8 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
             }
 
             var newId = NextRegistrationId();
-            if (!RegisterHotKey(
+            if (parsed.MiddleMouse && !EnsureInputHooks(out failureMessage)) return false;
+            if (!parsed.MiddleMouse && !RegisterHotKey(
                     _handle,
                     newId,
                     (uint)parsed.Modifiers,
@@ -147,8 +158,7 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
             // the previous ID and swap the routing table.
             if (current is not null)
             {
-                UnregisterHotKey(_handle, current.Id);
-                _actionsById.Remove(current.Id);
+                ReleaseRegistration(current);
             }
 
             var replacement = new RegisteredHotkey(newId, parsed);
@@ -188,6 +198,7 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         }
 
         _disposed = true;
+        DisposeInputHooks();
         _window.SourceInitialized -= OnSourceInitialized;
         _window.Loaded -= OnWindowLoaded;
         if (_source is not null)
@@ -199,7 +210,7 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         {
             foreach (var registration in _registrations.Values)
             {
-                UnregisterHotKey(_handle, registration.Id);
+                if (!registration.Gesture.MiddleMouse) UnregisterHotKey(_handle, registration.Id);
             }
 
             _registrations.Clear();
@@ -257,6 +268,7 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         }
 
         handled = true;
+        if (IsRecording) return nint.Zero;
         LogHotkeyReceived(_logger, action, wParam.ToInt32());
         HotkeyPressed?.Invoke(this, action);
         return nint.Zero;
@@ -281,11 +293,11 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         return _nextRegistrationId++;
     }
 
-    private static string GetDefaultGesture(RsttHotkey hotkey) =>
+    public static string GetDefaultGesture(RsttHotkey hotkey) =>
         hotkey switch
         {
             RsttHotkey.ToggleListening => "Ctrl+Alt+R",
-            RsttHotkey.ToggleTextInjection => "Ctrl+Alt+T",
+            RsttHotkey.PasteRecognizedSentences => "MMB",
             RsttHotkey.ToggleCaptionOverlay => "Ctrl+Alt+C",
             _ => throw new ArgumentOutOfRangeException(nameof(hotkey)),
         };
@@ -294,12 +306,18 @@ public sealed partial class GlobalHotkeyManager : IGlobalHotkeyService
         hotkey switch
         {
             RsttHotkey.ToggleListening => "Start / stop listening",
-            RsttHotkey.ToggleTextInjection => "Toggle text injection",
+            RsttHotkey.PasteRecognizedSentences => "Paste Recognized Sentences",
             RsttHotkey.ToggleCaptionOverlay => "Toggle captions",
             _ => hotkey.ToString(),
         };
 
     private sealed record RegisteredHotkey(int Id, HotkeyGesture Gesture);
+
+    private void ReleaseRegistration(RegisteredHotkey registration)
+    {
+        if (!registration.Gesture.MiddleMouse) UnregisterHotKey(_handle, registration.Id);
+        _actionsById.Remove(registration.Id);
+    }
 
     [LoggerMessage(
         LogLevel.Information,

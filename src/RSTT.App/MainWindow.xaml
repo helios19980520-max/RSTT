@@ -244,9 +244,10 @@
                                     <Border Grid.Column="4" Style="{StaticResource Card}">
                                         <StackPanel>
                                             <TextBlock Text="OUTPUT" Style="{StaticResource Eyebrow}" />
-                                            <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding IsTextInjectionEnabled}" Margin="0,9,0,0">
-                                                <TextBlock Text="Type into focused app" FontWeight="SemiBold" />
-                                            </CheckBox>
+                                            <StackPanel Margin="0,9,0,0">
+                                                <TextBlock Text="Paste on demand" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding PasteRecognizedSentencesHotkey}" Style="{StaticResource MutedBody}" Margin="0,5,0,0" />
+                                            </StackPanel>
                                             <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding IsCaptionOverlayEnabled}" Margin="0,14,0,0">
                                                 <TextBlock Text="Caption overlay" FontWeight="SemiBold" />
                                             </CheckBox>
@@ -300,7 +301,7 @@
                                             <StackPanel Orientation="Horizontal">
                                                 <TextBlock Text="Live transcript" Style="{StaticResource SectionTitle}" />
                                                 <Border Background="#16313B" CornerRadius="8" Padding="8,3" Margin="10,0,0,0">
-                                                    <TextBlock Text="PREVIEW" Foreground="{StaticResource Accent}" FontSize="9" FontWeight="Bold" />
+                                                    <TextBlock Text="PENDING PASTE" Foreground="{StaticResource Accent}" FontSize="9" FontWeight="Bold" />
                                                 </Border>
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
@@ -821,35 +822,15 @@
                                 <Border Style="{StaticResource Card}" Margin="0,22,0,0">
                                     <StackPanel>
                                         <TextBlock Text="Output behavior" Style="{StaticResource SectionTitle}" Margin="0,0,0,16" />
-                                        <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding IsTextInjectionEnabled}">
-                                            <StackPanel>
-                                                <TextBlock Text="Type stable text into the focused app" FontWeight="SemiBold" />
-                                                <TextBlock Text="Uses Windows Unicode input only after words stabilize." Style="{StaticResource MutedBody}" FontSize="11" />
-                                            </StackPanel>
-                                        </CheckBox>
+                                        <TextBlock Text="Recognized text waits in Live Transcript. Focus an input and use Paste Recognized Sentences to paste one batch. Only pasted text is cleared."
+                                                   Style="{StaticResource MutedBody}" TextWrapping="Wrap" />
                                         <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding IsCaptionOverlayEnabled}" Margin="0,20,0,0">
                                             <StackPanel>
                                                 <TextBlock Text="Show live caption overlay" FontWeight="SemiBold" />
                                                 <TextBlock Text="The overlay never activates or steals focus." Style="{StaticResource MutedBody}" FontSize="11" />
                                             </StackPanel>
                                         </CheckBox>
-                                        <Grid Margin="0,20,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="230" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel VerticalAlignment="Center">
-                                                <TextBlock Text="Text delivery profile" FontWeight="SemiBold" />
-                                                <TextBlock Text="Automatic uses measured safe pacing for modern Notepad while keeping other targets fast."
-                                                           Style="{StaticResource MutedBody}"
-                                                           FontSize="11" />
-                                            </StackPanel>
-                                            <ComboBox Grid.Column="1"
-                                                      ItemsSource="{Binding TextInjectionDeliveryModes}"
-                                                      SelectedItem="{Binding TextInjectionDeliveryMode}"
-                                                      AutomationProperties.Name="Text injection delivery profile"
-                                                      VerticalAlignment="Center" />
-                                        </Grid>
+
                                     </StackPanel>
                                 </Border>
 
@@ -913,54 +894,45 @@
                                 <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                                     <StackPanel>
                                         <TextBlock Text="Global shortcuts" Style="{StaticResource SectionTitle}" />
-                                        <TextBlock Text="Use a modifier plus a letter, digit, function key, or navigation key. Changes are registered before the previous shortcut is released."
+                                        <TextBlock Text="Record a keyboard shortcut, MMB, or hold MMB and press a key. Confirm to save. Clear disables an action."
                                                    Style="{StaticResource MutedBody}" FontSize="11" Margin="0,5,0,0" />
-                                        <Grid Margin="0,16,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="230" />
-                                            </Grid.ColumnDefinitions>
+                                        <Grid Margin="0,20,0,0">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="350" /></Grid.ColumnDefinitions>
                                             <TextBlock Text="Start / stop listening" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1">
-                                                <TextBox Text="{Binding ToggleListeningHotkey, UpdateSourceTrigger=LostFocus}"
-                                                         FontFamily="Cascadia Mono, Consolas" />
-                                                <TextBlock Text="{Binding ToggleListeningHotkeyError}"
-                                                           Foreground="{StaticResource Danger}"
-                                                           FontSize="10"
-                                                           TextWrapping="Wrap"
-                                                           Margin="2,4,0,0" />
+                                                <TextBlock Text="{Binding ToggleListeningHotkey}" FontFamily="Cascadia Mono, Consolas" MinHeight="22" />
+                                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                                    <Button Content="Record Shortcut" Tag="ToggleListening" Click="RecordShortcut_Click" Style="{StaticResource SecondaryButton}" />
+                                                    <Button Content="Reset" Tag="ToggleListening" Click="ResetShortcut_Click" Style="{StaticResource SecondaryButton}" Margin="6,0,0,0" />
+                                                    <Button Content="Clear" Tag="ToggleListening" Click="ClearShortcut_Click" Style="{StaticResource SecondaryButton}" Margin="6,0,0,0" />
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding ToggleListeningHotkeyError}" Foreground="{StaticResource Danger}" FontSize="10" TextWrapping="Wrap" Margin="2,4,0,0" />
                                             </StackPanel>
                                         </Grid>
-                                        <Grid Margin="0,13,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="230" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Toggle text injection" VerticalAlignment="Center" />
+                                        <Grid Margin="0,20,0,0">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="350" /></Grid.ColumnDefinitions>
+                                            <TextBlock Text="Paste Recognized Sentences" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1">
-                                                <TextBox Text="{Binding ToggleInjectionHotkey, UpdateSourceTrigger=LostFocus}"
-                                                         FontFamily="Cascadia Mono, Consolas" />
-                                                <TextBlock Text="{Binding ToggleInjectionHotkeyError}"
-                                                           Foreground="{StaticResource Danger}"
-                                                           FontSize="10"
-                                                           TextWrapping="Wrap"
-                                                           Margin="2,4,0,0" />
+                                                <TextBlock Text="{Binding PasteRecognizedSentencesHotkey}" FontFamily="Cascadia Mono, Consolas" MinHeight="22" />
+                                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                                    <Button Content="Record Shortcut" Tag="PasteRecognizedSentences" Click="RecordShortcut_Click" Style="{StaticResource SecondaryButton}" />
+                                                    <Button Content="Reset" Tag="PasteRecognizedSentences" Click="ResetShortcut_Click" Style="{StaticResource SecondaryButton}" Margin="6,0,0,0" />
+                                                    <Button Content="Clear" Tag="PasteRecognizedSentences" Click="ClearShortcut_Click" Style="{StaticResource SecondaryButton}" Margin="6,0,0,0" />
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding PasteRecognizedSentencesHotkeyError}" Foreground="{StaticResource Danger}" FontSize="10" TextWrapping="Wrap" Margin="2,4,0,0" />
                                             </StackPanel>
                                         </Grid>
-                                        <Grid Margin="0,13,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="230" />
-                                            </Grid.ColumnDefinitions>
+                                        <Grid Margin="0,20,0,0">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="350" /></Grid.ColumnDefinitions>
                                             <TextBlock Text="Toggle captions" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1">
-                                                <TextBox Text="{Binding ToggleCaptionsHotkey, UpdateSourceTrigger=LostFocus}"
-                                                         FontFamily="Cascadia Mono, Consolas" />
-                                                <TextBlock Text="{Binding ToggleCaptionsHotkeyError}"
-                                                           Foreground="{StaticResource Danger}"
-                                                           FontSize="10"
-                                                           TextWrapping="Wrap"
-                                                           Margin="2,4,0,0" />
+                                                <TextBlock Text="{Binding ToggleCaptionsHotkey}" FontFamily="Cascadia Mono, Consolas" MinHeight="22" />
+                                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                                    <Button Content="Record Shortcut" Tag="ToggleCaptionOverlay" Click="RecordShortcut_Click" Style="{StaticResource SecondaryButton}" />
+                                                    <Button Content="Reset" Tag="ToggleCaptionOverlay" Click="ResetShortcut_Click" Style="{StaticResource SecondaryButton}" Margin="6,0,0,0" />
+                                                    <Button Content="Clear" Tag="ToggleCaptionOverlay" Click="ClearShortcut_Click" Style="{StaticResource SecondaryButton}" Margin="6,0,0,0" />
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding ToggleCaptionsHotkeyError}" Foreground="{StaticResource Danger}" FontSize="10" TextWrapping="Wrap" Margin="2,4,0,0" />
                                             </StackPanel>
                                         </Grid>
                                     </StackPanel>
@@ -1096,7 +1068,7 @@
                                         <StackPanel>
                                             <TextBlock Text="Runtime" Style="{StaticResource SectionTitle}" />
                                             <TextBlock Text=".NET 8 · WPF · win-x64" Style="{StaticResource MutedBody}" Margin="0,7,0,0" />
-                                            <TextBlock Text="sherpa-onnx 1.13.4" Style="{StaticResource MutedBody}" />
+                                            <TextBlock Text="sherpa-onnx 1.13.8" Style="{StaticResource MutedBody}" />
                                             <TextBlock Text="NAudio 2.3.0" Style="{StaticResource MutedBody}" />
                                         </StackPanel>
                                     </Border>

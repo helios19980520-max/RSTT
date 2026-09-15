@@ -6,6 +6,8 @@ public interface IPerformanceMonitor
 {
     void SetSessionContext(string provider, string modelId, string audioDevice);
 
+    void SetInferenceProcess(int? processId) { }
+
     void RecordAudioCallback(int sourceFrames, int sampleRate);
 
     void SetAudioQueue(int depth, double durationMs, double oldestAgeMs);

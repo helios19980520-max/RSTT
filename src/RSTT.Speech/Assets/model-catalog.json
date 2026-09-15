@@ -1,6 +1,47 @@
 [
   {
     "id": "NemotronStreamingEn06BInt8_560ms_20260425",
+    "cudaVariant": {
+      "directoryName": "nemotron-streaming-en-0.6b-fp32-560ms-20260425",
+      "revision": "d655d5f6c5e6a01525a0c905e548facbb1feba5e",
+      "artifacts": [
+        {
+          "key": "decoder",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-2026-04-25/resolve/d655d5f6c5e6a01525a0c905e548facbb1feba5e/decoder.onnx",
+          "fileName": "decoder.onnx",
+          "expectedBytes": 28883664,
+          "sha256": "17614cc0415d49daefd63cd91cb3415af046fa5a487c2049def68f51a667d6fe"
+        },
+        {
+          "key": "encoder-weights",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-2026-04-25/resolve/d655d5f6c5e6a01525a0c905e548facbb1feba5e/encoder.data",
+          "fileName": "encoder.data",
+          "expectedBytes": 2436567040,
+          "sha256": "44f65771e1570546f61106b3d0c604a60b398d061476fda8042bb05432601bd4"
+        },
+        {
+          "key": "encoder",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-2026-04-25/resolve/d655d5f6c5e6a01525a0c905e548facbb1feba5e/encoder.onnx",
+          "fileName": "encoder.onnx",
+          "expectedBytes": 42034777,
+          "sha256": "9af6849f4f4fbd033469998e7c80bf5f1ac5800e230f20f0ca4b7482a524a7e3"
+        },
+        {
+          "key": "joiner",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-2026-04-25/resolve/d655d5f6c5e6a01525a0c905e548facbb1feba5e/joiner.onnx",
+          "fileName": "joiner.onnx",
+          "expectedBytes": 6894757,
+          "sha256": "d4ef2398e4b19cb166c0c12f03cb20333e4d359d63c5fd8cf965c0649c1d0d03"
+        },
+        {
+          "key": "tokens",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-2026-04-25/resolve/d655d5f6c5e6a01525a0c905e548facbb1feba5e/tokens.txt",
+          "fileName": "tokens.txt",
+          "expectedBytes": 8952,
+          "sha256": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"
+        }
+      ]
+    },
     "displayName": "Nemotron Streaming English 0.6B",
     "shortName": "Nemotron English",
     "description": "Cache-aware English recognition that reuses encoder context instead of recomputing overlapping audio windows.",
@@ -183,6 +224,47 @@
   },
   {
     "id": "ParakeetUnifiedEnInt8",
+    "cudaVariant": {
+      "directoryName": "parakeet-unified-en-0.6b-fp32-streaming-1120ms",
+      "revision": "6b81ecde332cc55c621ff955695f91c51962751b",
+      "artifacts": [
+        {
+          "key": "decoder",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms/resolve/6b81ecde332cc55c621ff955695f91c51962751b/decoder.onnx",
+          "fileName": "decoder.onnx",
+          "expectedBytes": 28883721,
+          "sha256": "26e3615bf09808e0fe1cc843b67874c6292e140192a72b2197c6502dfb49b6ca"
+        },
+        {
+          "key": "encoder",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms/resolve/6b81ecde332cc55c621ff955695f91c51962751b/encoder.onnx",
+          "fileName": "encoder.onnx",
+          "expectedBytes": 41904098,
+          "sha256": "76468fce46a2812e430fe3f56db77e4d461b66b61c4824098d1d79f53f457076"
+        },
+        {
+          "key": "encoder-weights",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms/resolve/6b81ecde332cc55c621ff955695f91c51962751b/encoder.weights",
+          "fileName": "encoder.weights",
+          "expectedBytes": 2437091328,
+          "sha256": "c054b2932ee13aa39ed84982a399822f3193311fb6fd8e1e204566722614bd87"
+        },
+        {
+          "key": "joiner",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms/resolve/6b81ecde332cc55c621ff955695f91c51962751b/joiner.onnx",
+          "fileName": "joiner.onnx",
+          "expectedBytes": 6894757,
+          "sha256": "680ddf13ab1f8a75b8d9f831980124b826dbbf4640f92cdfd30b72d4d2e811a4"
+        },
+        {
+          "key": "tokens",
+          "sourceUrl": "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-streaming-1120ms/resolve/6b81ecde332cc55c621ff955695f91c51962751b/tokens.txt",
+          "fileName": "tokens.txt",
+          "expectedBytes": 8952,
+          "sha256": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"
+        }
+      ]
+    },
     "displayName": "Parakeet Unified English 0.6B",
     "shortName": "Parakeet Unified",
     "description": "High-quality punctuated English recognition using buffered streaming. Accurate, but substantially more CPU-intensive than cache-aware Nemotron on this machine.",

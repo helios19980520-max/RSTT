@@ -17,9 +17,13 @@
     <ProjectReference Include="..\RSTT.Input\RSTT.Input.csproj" />
     <ProjectReference Include="..\RSTT.Infrastructure\RSTT.Infrastructure.csproj" />
     <ProjectReference Include="..\RSTT.Whisper.Worker\RSTT.Whisper.Worker.csproj"
-                      ReferenceOutputAssembly="false" />
+                      ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\RSTT.Sherpa.Worker\RSTT.Sherpa.Worker.csproj"
-                      ReferenceOutputAssembly="false" />
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\RSTT.Sherpa.Cuda12.Worker\RSTT.Sherpa.Cuda12.Worker.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\RSTT.Whisper.Cuda12.Worker\RSTT.Whisper.Cuda12.Worker.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
   </ItemGroup>
@@ -46,7 +50,7 @@
       <SherpaCpuWorkerFiles Include="$(MSBuildThisFileDirectory)..\RSTT.Sherpa.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
     </ItemGroup>
     <Copy SourceFiles="@(SherpaCpuWorkerFiles)"
-          DestinationFiles="@(SherpaCpuWorkerFiles->'$(OutDir)workers\sherpa-cpu\1.13.4\%(RecursiveDir)%(Filename)%(Extension)')"
+          DestinationFiles="@(SherpaCpuWorkerFiles->'$(OutDir)workers\sherpa-cpu\1.13.8\%(RecursiveDir)%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
   </Target>
   <Target Name="IncludeWhisperCpuWorkerInPublish"
@@ -64,9 +68,10 @@
     <ItemGroup>
       <SherpaCpuWorkerPublishFiles Include="$(MSBuildThisFileDirectory)..\RSTT.Sherpa.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
       <ResolvedFileToPublish Include="@(SherpaCpuWorkerPublishFiles)">
-        <RelativePath>workers\sherpa-cpu\1.13.4\%(SherpaCpuWorkerPublishFiles.RecursiveDir)%(SherpaCpuWorkerPublishFiles.Filename)%(SherpaCpuWorkerPublishFiles.Extension)</RelativePath>
+        <RelativePath>workers\sherpa-cpu\1.13.8\%(SherpaCpuWorkerPublishFiles.RecursiveDir)%(SherpaCpuWorkerPublishFiles.Filename)%(SherpaCpuWorkerPublishFiles.Extension)</RelativePath>
         <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       </ResolvedFileToPublish>
     </ItemGroup>
   </Target>
+  <Import Project="..\..\build\AcceleratorWorkers.targets" />
 </Project>

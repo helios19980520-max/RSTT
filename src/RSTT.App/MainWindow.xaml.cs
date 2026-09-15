@@ -50,7 +50,7 @@ public partial class MainWindow : Window, IDisposable
             Padding = new System.Windows.Forms.Padding(5),
         };
         menu.Items.Add("Start / Stop listening", null, (_, _) => _viewModel.StartStopCommand.Execute(null));
-        menu.Items.Add("Toggle text injection", null, (_, _) => _viewModel.ToggleTextInjection());
+        menu.Items.Add("Paste Recognized Sentences", null, (_, _) => _viewModel.PasteRecognizedSentencesCommand.Execute(null));
         menu.Items.Add("Toggle captions", null, (_, _) => _viewModel.ToggleCaptionOverlay());
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         menu.Items.Add("Open RSTT", null, (_, _) => ShowMainWindow());
@@ -75,7 +75,7 @@ public partial class MainWindow : Window, IDisposable
     {
         if (eventArgs.PropertyName is nameof(MainViewModel.IsCaptionOverlayEnabled)
             or nameof(MainViewModel.IsListening)
-            or nameof(MainViewModel.HasTranscript)
+            or nameof(MainViewModel.HasCurrentCaption)
             or nameof(MainViewModel.IsOverlayPreviewing))
         {
             SyncOverlay();
@@ -88,7 +88,7 @@ public partial class MainWindow : Window, IDisposable
 
         if (eventArgs.PropertyName is "" or
             nameof(MainViewModel.ToggleListeningHotkey) or
-            nameof(MainViewModel.ToggleInjectionHotkey) or
+            nameof(MainViewModel.PasteRecognizedSentencesHotkey) or
             nameof(MainViewModel.ToggleCaptionsHotkey))
         {
             SyncConfiguredHotkeys();
@@ -98,7 +98,7 @@ public partial class MainWindow : Window, IDisposable
     private void SyncOverlay()
     {
         if (_viewModel.IsCaptionOverlayEnabled
-            && (_viewModel.IsListening || _viewModel.HasTranscript || _viewModel.IsOverlayPreviewing))
+            && (_viewModel.IsListening || _viewModel.HasCurrentCaption || _viewModel.IsOverlayPreviewing))
         {
             if (!_overlay.IsVisible)
             {
@@ -179,8 +179,8 @@ public partial class MainWindow : Window, IDisposable
             case RsttHotkey.ToggleListening:
                 _viewModel.StartStopCommand.Execute(null);
                 break;
-            case RsttHotkey.ToggleTextInjection:
-                _viewModel.ToggleTextInjection();
+            case RsttHotkey.PasteRecognizedSentences:
+                _viewModel.PasteRecognizedSentencesCommand.Execute(null);
                 break;
             case RsttHotkey.ToggleCaptionOverlay:
                 _viewModel.ToggleCaptionOverlay();
@@ -202,8 +202,8 @@ public partial class MainWindow : Window, IDisposable
                 RsttHotkey.ToggleListening,
                 _viewModel.ToggleListeningHotkey);
             TryApplyHotkey(
-                RsttHotkey.ToggleTextInjection,
-                _viewModel.ToggleInjectionHotkey);
+                RsttHotkey.PasteRecognizedSentences,
+                _viewModel.PasteRecognizedSentencesHotkey);
             TryApplyHotkey(
                 RsttHotkey.ToggleCaptionOverlay,
                 _viewModel.ToggleCaptionsHotkey);
@@ -212,6 +212,26 @@ public partial class MainWindow : Window, IDisposable
         {
             _syncingHotkeys = false;
         }
+    }
+
+    private void RecordShortcut_Click(object sender, RoutedEventArgs e)
+    {
+        var action = Enum.Parse<RsttHotkey>((string)((FrameworkElement)sender).Tag);
+        var recorder = new ShortcutRecorderWindow(_hotkeys, action) { Owner = this };
+        if (recorder.ShowDialog() == true)
+            _viewModel.ConfirmHotkeyRegistration(action, _hotkeys.GetGesture(action));
+    }
+
+    private void ResetShortcut_Click(object sender, RoutedEventArgs e)
+    {
+        var action = Enum.Parse<RsttHotkey>((string)((FrameworkElement)sender).Tag);
+        TryApplyHotkey(action, GlobalHotkeyManager.GetDefaultGesture(action));
+    }
+
+    private void ClearShortcut_Click(object sender, RoutedEventArgs e)
+    {
+        var action = Enum.Parse<RsttHotkey>((string)((FrameworkElement)sender).Tag);
+        TryApplyHotkey(action, string.Empty);
     }
 
     private void TryApplyHotkey(RsttHotkey hotkey, string gesture)

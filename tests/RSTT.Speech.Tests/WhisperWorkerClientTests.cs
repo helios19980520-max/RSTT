@@ -18,7 +18,7 @@ public sealed class WhisperWorkerClientTests
         Assert.Equal(ComputeBackend.Cpu, worker.Backend);
         Assert.Equal("whisper.cpp", worker.Handshake.Engine);
         Assert.Equal("cpu", worker.Handshake.Backend);
-        Assert.Equal(1, worker.Handshake.ProtocolVersion);
+        Assert.Equal(RSTT.Core.Workers.SpeechWorkerProtocol.Version, worker.Handshake.ProtocolVersion);
         Assert.Contains("Whisper.net", worker.Handshake.RuntimeVersion, StringComparison.Ordinal);
     }
 }

@@ -10,9 +10,9 @@ Exactly one native ASR worker and one recognizer are active:
 
 | Package | Worker | Runtime |
 | --- | --- | --- |
-| Base CPU application | `workers/sherpa-cpu/1.13.4` | sherpa-onnx 1.13.4 CPU |
+| Base CPU application | `workers/sherpa-cpu/1.13.8` | sherpa-onnx 1.13.8 CPU |
 | Base CPU application | `workers/whisper-cpu/1.9.1` | Whisper.net / whisper.cpp CPU |
-| Accelerator Pack | `workers/sherpa-cuda12/1.13.4` | sherpa 1.13.4, ONNX CUDA provider, CUDA 12.8, cuDNN 9.24 |
+| Accelerator Pack | `workers/sherpa-cuda12/1.13.8` | sherpa 1.13.8, ONNX Runtime 1.28.2 CUDA provider, CUDA 12.8, cuDNN 9.24 |
 | Accelerator Pack | `workers/whisper-cuda12/1.9.1` | Whisper.net 1.9.1 CUDA 12 |
 
 Workers communicate through a versioned length-prefixed named pipe with typed
@@ -27,7 +27,7 @@ CUDA and CPU runtimes may therefore coexist without DLL-name collisions.
 | Requested setting | Behavior |
 | --- | --- |
 | CPU | Start only the model-appropriate CPU worker |
-| CUDA | Require the model-appropriate CUDA worker; surface failure |
+| CUDA | Try and verify CUDA; report a failed initialization before CPU fallback |
 | Auto | Try CUDA handshake/load/warmup, fully terminate it on failure, then start CPU |
 
 Warmup proves that the provider and model can execute, but the Live UI reports
@@ -41,35 +41,35 @@ CUDA 12.8/cuDNN 9.24 files for sherpa; users do not replace DLLs manually.
 
 Real packaged CUDA decode passed for:
 
-- Nemotron Streaming English 0.6B;
+- Nemotron Streaming English 0.6B (FP32 GPU weights);
+- Parakeet Unified English 0.6B (FP32 GPU weights);
 - Qwen3-ASR 0.6B INT8;
 - Whisper Large v3 Turbo Q5_0;
 - Whisper Large v3 Turbo full.
 
-See [Performance](PERFORMANCE.md) and [Current issues](CURRENT_ISSUES.md) for
-the measured RTF and memory values. On this GPU, CUDA is a major improvement
-for Whisper, modest for Nemotron, and slower than CPU for the short Qwen test
-clip. Backend labels therefore describe execution, not a speed promise.
+Current Parakeet and Nemotron source-audio measurements are in the
+[recognition update](PASTE_AND_RECOGNITION_UPDATE.md). Earlier INT8 measurements
+in Performance and Current issues describe the previous runtime/model combination.
 
 ## Build and install the Accelerator Pack
 
 Prerequisites for building the pack are CUDA Toolkit 12.8, cuDNN 9.x, and the
-pinned official sherpa 1.13.4 CUDA archive. The script validates the archive
+pinned official sherpa 1.13.8 CUDA archive (downloaded by the script when absent). The script validates the archive
 SHA-256, publishes both workers, copies only required redistributable DLLs,
 removes the irrelevant Linux Whisper runtime, collects notices, and creates a
 per-file SHA-256 manifest plus Zip64 archive.
 
 ```powershell
-.\scripts\Build-AcceleratorPack.ps1 `
-  -Configuration Release `
-  -SherpaArchivePath C:\path\to\sherpa-onnx-v1.13.4-cuda-12.x-cudnn-9.x-win-x64-cuda.tar.bz2
+.\scripts\Build-AcceleratorPack.ps1 -Configuration Release
 ```
 
-Install into a published RSTT directory:
+After building the pack, normal app builds and publishes include its native CUDA
+runtime together with fresh managed workers. To install the archive separately
+into a published RSTT directory:
 
 ```powershell
-Expand-Archive .\RSTT-Accelerator-Pack-1.0.0-win-x64.zip .\rstt-pack
-& .\rstt-pack\RSTT-Accelerator-Pack-1.0.0-win-x64\Install-AcceleratorPack.ps1 `
+Expand-Archive .\RSTT-Accelerator-Pack-1.0.2-win-x64.zip .\rstt-pack
+& .\rstt-pack\RSTT-Accelerator-Pack-1.0.2-win-x64\Install-AcceleratorPack.ps1 `
   -AppDirectory C:\path\to\RSTT
 ```
 

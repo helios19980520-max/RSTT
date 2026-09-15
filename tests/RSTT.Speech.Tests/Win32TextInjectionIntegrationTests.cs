@@ -32,6 +32,20 @@ public sealed class Win32TextInjectionIntegrationTests
 
     [Fact]
     [Trait("Category", "WindowsIntegration")]
+    public async Task ClipboardPasteDeliversUnicodeBatchesThroughNativeEditControl()
+    {
+        await using var host = await NativeEditControlHost.StartAsync(recordEvents: true);
+        using var service = new Win32ClipboardPasteService();
+        const string first = "First paragraph: 日本語 🙂.";
+        const string second = " Second paragraph: café 🚀.";
+        Assert.True((await service.InjectAsync(Request(first, 1))).Succeeded);
+        Assert.Equal(first, await host.WaitForExactTextAsync(first, TimeSpan.FromSeconds(5)));
+        Assert.True((await service.InjectAsync(Request(second, 2))).Succeeded);
+        Assert.Equal(first + second, await host.WaitForExactTextAsync(first + second, TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    [Trait("Category", "WindowsIntegration")]
     public async Task DedicatedNativeEditControlReceivesExactCorpus()
     {
         foreach (var expected in ExactCorpus)

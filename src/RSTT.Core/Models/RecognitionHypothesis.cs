@@ -9,4 +9,5 @@ public sealed record RecognitionHypothesis(
     DateTimeOffset Timestamp,
     string Language,
     string EngineId,
-    float? Confidence = null);
+    float? Confidence = null,
+    bool CommitPending = false);

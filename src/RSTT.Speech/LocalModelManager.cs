@@ -102,6 +102,57 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
         throw new InvalidOperationException(message);
     }
 
+    public async Task<ModelInstallation> GetSelectedInstallationAsync(
+        ComputeBackend backend,
+        CancellationToken cancellationToken = default)
+    {
+        var selected = GetSelectedDescriptor();
+        if (backend != ComputeBackend.Cuda || selected.CudaVariant is null)
+            return GetSelectedInstallation();
+
+        var gpu = WithCudaWeights(selected);
+        if (!TryGetInstallation(gpu, out var installation, out _))
+        {
+            var progress = new InlineDownloadProgress(update =>
+            {
+                if (update.Stage != ModelAvailability.Ready)
+                    SetTransientState(selected, update.Stage, $"Preparing GPU model: {update.Percentage:N0}% · {update.CurrentFile}");
+            });
+            try { await DownloadModelAsync(gpu, progress, cancellationToken).ConfigureAwait(false); }
+            catch
+            {
+                // A GPU download failure must not mark the existing CPU weights
+                // uninstalled when the engine performs its explicit fallback.
+                lock (_stateGate) { _transientStates.Remove(selected.Id); _transientMessages.Remove(selected.Id); }
+                ModelChanged?.Invoke(this, GetModelInformation(selected));
+                throw;
+            }
+            if (!TryGetInstallation(gpu, out installation, out var message))
+                throw new InvalidDataException(message);
+        }
+
+        return installation with { Information = GetModelInformation(selected), Descriptor = selected };
+    }
+
+    private sealed class InlineDownloadProgress(Action<ModelDownloadProgress> report) : IProgress<ModelDownloadProgress>
+    {
+        public void Report(ModelDownloadProgress value) => report(value);
+    }
+
+    private static ModelDescriptor WithCudaWeights(ModelDescriptor model)
+    {
+        var variant = model.CudaVariant!;
+        return model with
+        {
+            DirectoryName = variant.DirectoryName,
+            Revision = variant.Revision,
+            Artifacts = variant.Artifacts,
+            DownloadBytes = variant.Artifacts.Sum(file => file.ExpectedBytes),
+            InstalledBytes = variant.Artifacts.Sum(file => file.ExpectedBytes),
+            CudaVariant = null,
+        };
+    }
+
     public Task SelectAsync(string modelId, CancellationToken cancellationToken = default)
     {
         var model = _catalog.GetById(modelId);
@@ -156,12 +207,17 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
         ModelChanged?.Invoke(this, GetModelInformation(model));
     }
 
-    public async Task DownloadAsync(
+    public Task DownloadAsync(
         string modelId,
         IProgress<ModelDownloadProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        DownloadModelAsync(_catalog.GetById(modelId), progress, cancellationToken);
+
+    private async Task DownloadModelAsync(
+        ModelDescriptor model,
+        IProgress<ModelDownloadProgress>? progress,
+        CancellationToken cancellationToken)
     {
-        var model = _catalog.GetById(modelId);
         if (!IsActionable(model))
         {
             throw new InvalidOperationException($"{model.DisplayName} is not downloadable because its integration is {FormatIntegrationStatus(model.IntegrationStatus)}.");
@@ -306,6 +362,12 @@ public sealed partial class LocalModelManager : IModelManager, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             DeleteDirectoryIfPresent(GetModelDirectory(model));
             DeleteDirectoryIfPresent(GetStagingDirectory(model));
+            if (model.CudaVariant is not null)
+            {
+                var gpu = WithCudaWeights(model);
+                DeleteDirectoryIfPresent(GetModelDirectory(gpu));
+                DeleteDirectoryIfPresent(GetStagingDirectory(gpu));
+            }
             lock (_stateGate)
             {
                 _transientStates.Remove(model.Id);

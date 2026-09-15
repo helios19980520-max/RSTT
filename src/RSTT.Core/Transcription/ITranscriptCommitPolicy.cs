@@ -33,7 +33,7 @@ public abstract class TranscriptCommitPolicyBase : ITranscriptCommitPolicy
         var stableCandidate = SelectStableCandidate(
             _previousHypothesis,
             normalizedText,
-            hypothesis.IsFinal);
+            hypothesis.IsFinal || hypothesis.CommitPending);
         var stableContent = _formatting.Normalize(GetUnconfirmedSegmentSuffix(stableCandidate));
         var commits = new List<TranscriptCommit>(1);
 
@@ -151,7 +151,31 @@ public abstract class TranscriptCommitPolicyBase : ITranscriptCommitPolicy
             }
         }
 
-        return string.Empty;
+        // A pasted prefix can itself be corrected (CUDA -> graphics, for example).
+        // Align that prefix with the revision; an absent literal anchor must not
+        // suppress every later word until the recognizer starts another sentence.
+        var limit = Math.Min(hypothesisWords.Length, committedWords.Length + 32);
+        var previous = Enumerable.Range(0, limit + 1).ToArray();
+        var current = new int[limit + 1];
+        for (var row = 1; row <= committedWords.Length; row++)
+        {
+            current[0] = row;
+            for (var column = 1; column <= limit; column++)
+            {
+                var substitution = string.Equals(NormalizeAnchorWord(committedWords[row - 1]),
+                    NormalizeAnchorWord(hypothesisWords[column - 1]), StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                current[column] = Math.Min(previous[column] + 1,
+                    Math.Min(current[column - 1] + 1, previous[column - 1] + substitution));
+            }
+            (previous, current) = (current, previous);
+        }
+        var boundary = 0;
+        for (var column = 1; column <= limit; column++)
+            if (previous[column] < previous[boundary] ||
+                previous[column] == previous[boundary] &&
+                Math.Abs(column - committedWords.Length) < Math.Abs(boundary - committedWords.Length))
+                boundary = column;
+        return string.Join(' ', hypothesisWords.Skip(boundary));
     }
 
     private static string NormalizeAnchorWord(string word) =>

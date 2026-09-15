@@ -34,7 +34,7 @@ public sealed class WorkerExecutableResolverTests
 
             var resolved = WorkerExecutableResolver.Resolve(
                 appDirectory,
-                Path.Combine("workers", "sherpa-cuda12", "1.13.4"),
+                Path.Combine("workers", "sherpa-cuda12", "1.13.8"),
                 "RSTT.Speech.Worker.exe",
                 "RSTT.Sherpa.Cuda12.Worker",
                 allowDevelopmentFallback: false);
@@ -44,7 +44,7 @@ public sealed class WorkerExecutableResolverTests
                     appDirectory,
                     "workers",
                     "sherpa-cuda12",
-                    "1.13.4",
+                    "1.13.8",
                     "RSTT.Speech.Worker.exe"),
                 resolved);
             Assert.NotEqual(developmentWorker, resolved);

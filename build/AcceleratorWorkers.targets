@@ -1,0 +1,41 @@
+<Project>
+  <PropertyGroup>
+    <AcceleratorPackRoot Condition="'$(AcceleratorPackRoot)' == ''">$(MSBuildThisFileDirectory)..\artifacts\accelerator-pack\RSTT-Accelerator-Pack-1.0.2-win-x64</AcceleratorPackRoot>
+    <SherpaCudaNativeRoot>$(AcceleratorPackRoot)\workers\sherpa-cuda12\1.13.8</SherpaCudaNativeRoot>
+  </PropertyGroup>
+  <!-- NuGet supplies CPU native sherpa/ORT binaries even in the CUDA project.
+       Always pair freshly built managed workers with the complete pinned CUDA runtime. -->
+  <Target Name="CollectAcceleratorWorkers" Condition="Exists('$(SherpaCudaNativeRoot)\cudnn64_9.dll')">
+    <ItemGroup>
+      <SherpaCudaManagedFiles Include="$(MSBuildThisFileDirectory)..\src\RSTT.Sherpa.Cuda12.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" />
+      <SherpaCudaManagedFiles Remove="@(SherpaCudaManagedFiles)" Condition="'%(Filename)' == 'onnxruntime' or '%(Filename)' == 'sherpa-onnx-c-api' or '%(Filename)' == 'onnxruntime_providers_cuda' or '%(Filename)' == 'onnxruntime_providers_shared'" />
+      <AcceleratorWorker Include="@(SherpaCudaManagedFiles)">
+        <WorkerPath>workers\sherpa-cuda12\1.13.8\%(SherpaCudaManagedFiles.RecursiveDir)%(SherpaCudaManagedFiles.Filename)%(SherpaCudaManagedFiles.Extension)</WorkerPath>
+      </AcceleratorWorker>
+      <SherpaCudaNativeFiles Include="$(SherpaCudaNativeRoot)\onnxruntime*.dll;$(SherpaCudaNativeRoot)\sherpa-onnx-c-api.dll;$(SherpaCudaNativeRoot)\cud*.dll;$(SherpaCudaNativeRoot)\cublas*.dll;$(SherpaCudaNativeRoot)\cufft*.dll;$(SherpaCudaNativeRoot)\nvrtc*.dll" />
+      <AcceleratorWorker Include="@(SherpaCudaNativeFiles)">
+        <WorkerPath>workers\sherpa-cuda12\1.13.8\%(SherpaCudaNativeFiles.Filename)%(SherpaCudaNativeFiles.Extension)</WorkerPath>
+      </AcceleratorWorker>
+      <AcceleratorNoticeFiles Include="$(AcceleratorPackRoot)\notices\**\*" />
+      <AcceleratorWorker Include="@(AcceleratorNoticeFiles)">
+        <WorkerPath>notices\accelerator\%(AcceleratorNoticeFiles.RecursiveDir)%(AcceleratorNoticeFiles.Filename)%(AcceleratorNoticeFiles.Extension)</WorkerPath>
+      </AcceleratorWorker>
+      <WhisperCudaFiles Include="$(MSBuildThisFileDirectory)..\src\RSTT.Whisper.Cuda12.Worker\bin\$(Configuration)\net8.0-windows\win-x64\**\*" Exclude="$(MSBuildThisFileDirectory)..\src\RSTT.Whisper.Cuda12.Worker\bin\$(Configuration)\net8.0-windows\win-x64\runtimes\cuda12\linux-x64\**\*" />
+      <AcceleratorWorker Include="@(WhisperCudaFiles)">
+        <WorkerPath>workers\whisper-cuda12\1.9.1\%(WhisperCudaFiles.RecursiveDir)%(WhisperCudaFiles.Filename)%(WhisperCudaFiles.Extension)</WorkerPath>
+      </AcceleratorWorker>
+    </ItemGroup>
+  </Target>
+  <Target Name="CopyAcceleratorWorkers" AfterTargets="Build" DependsOnTargets="CollectAcceleratorWorkers">
+    <Copy SourceFiles="@(AcceleratorWorker)" DestinationFiles="@(AcceleratorWorker->'$(OutDir)%(WorkerPath)')" SkipUnchangedFiles="true" />
+    <Message Condition="'@(AcceleratorWorker)' == ''" Importance="high" Text="CUDA runtime pack absent. Run scripts/Build-AcceleratorPack.ps1 to enable GPU recognition in this build." />
+  </Target>
+  <Target Name="PublishAcceleratorWorkers" BeforeTargets="ComputeFilesToPublish" DependsOnTargets="CollectAcceleratorWorkers">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(AcceleratorWorker)">
+        <RelativePath>%(AcceleratorWorker.WorkerPath)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>

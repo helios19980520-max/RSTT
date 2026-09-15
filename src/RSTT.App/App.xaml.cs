@@ -70,14 +70,15 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IComputeBackendService>(
             provider => provider.GetRequiredService<IComputeDeviceService>());
         services.AddSingleton<TextFormattingPolicy>();
-        services.AddSingleton<ITranscriptCommitPolicy, ModelAwareTranscriptCommitPolicy>();
+        // Until the user pastes, the latest hypothesis may replace every word.
+        services.AddSingleton<ITranscriptCommitPolicy, FinalOnlyCommitPolicy>();
         services.AddSingleton<TranscriptStabilizer>();
         services.AddSingleton<CaptionHistory>();
         services.AddSingleton<IAudioCaptureService, WasapiLoopbackAudioCaptureService>();
         services.AddSingleton<IModelManager, LocalModelManager>();
         services.AddSingleton<ISpeechEngineFactory, SpeechEngineFactory>();
         services.AddSingleton<ISpeechRecognitionEngine, SpeechEngineRouter>();
-        services.AddSingleton<ITextInjectionService, Win32TextInjectionService>();
+        services.AddSingleton<ITextInjectionService, Win32ClipboardPasteService>();
         services.AddSingleton<RecognitionCoordinator>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton<MainWindow>();

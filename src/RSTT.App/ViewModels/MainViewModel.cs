@@ -41,10 +41,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string _actionMessage = "Everything runs locally on this PC.";
     private string _downloadProgressText = string.Empty;
     private string _toggleListeningHotkey = "Ctrl+Alt+R";
-    private string _toggleInjectionHotkey = "Ctrl+Alt+T";
+    private string _pasteRecognizedSentencesHotkey = "MMB";
     private string _toggleCaptionsHotkey = "Ctrl+Alt+C";
     private string _toggleListeningHotkeyError = string.Empty;
-    private string _toggleInjectionHotkeyError = string.Empty;
+    private string _pasteRecognizedSentencesHotkeyError = string.Empty;
     private string _toggleCaptionsHotkeyError = string.Empty;
     private string _computeStatus = "Checking available compute backends…";
     private string _modelSearchText = string.Empty;
@@ -136,6 +136,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         DeleteModelCommand = new AsyncRelayCommand(DeleteModelAsync, () => IsModelReady && !IsDownloadingModel, ReportCommandFailure);
         RetryModelCommand = new AsyncRelayCommand(RetryModelAsync, () => !IsDownloadingModel, ReportCommandFailure);
         ResetSettingsCommand = new AsyncRelayCommand(ResetSettingsAsync, null, ReportCommandFailure);
+        PasteRecognizedSentencesCommand = new AsyncRelayCommand(PasteRecognizedSentencesAsync, null, ReportCommandFailure);
         CopyTranscriptCommand = new RelayCommand(CopyTranscript, () => !string.IsNullOrWhiteSpace(TranscriptText));
         ClearTranscriptCommand = new RelayCommand(ClearTranscript, () => !string.IsNullOrWhiteSpace(TranscriptText));
         OpenModelsFolderCommand = new RelayCommand(() => OpenFolder(_paths.ModelsDirectory));
@@ -192,6 +193,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand RetryModelCommand { get; }
 
     public AsyncRelayCommand ResetSettingsCommand { get; }
+
+    public AsyncRelayCommand PasteRecognizedSentencesCommand { get; }
 
     public RelayCommand CopyTranscriptCommand { get; }
 
@@ -288,11 +291,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string StartStopGlyph => CurrentPresentation.ButtonGlyph;
 
     public string ActiveRuntimeLabel =>
+        CurrentState is ApplicationState.Initializing or ApplicationState.ModelLoading
+        ? "Verifying inference device…"
+        : CurrentState == ApplicationState.ModelMissing
+        ? "Model not loaded"
+        :
         _performanceSnapshot?.Provider switch
         {
-            "cuda" or "cuda-active" => "CUDA Active",
-            "cuda-ready" => "CUDA ready · awaiting decode",
-            "cpu" => "CPU Active",
+            "cuda" or "cuda-active" => IsListening ? "CUDA Active" : "CUDA verified · ready",
+            "cuda-ready" => "CUDA verified · awaiting decode",
+            "cpu" => IsListening ? "CPU Active" : "CPU ready",
             { Length: > 0 } provider => provider,
             _ => "Runtime not started",
         };
@@ -302,11 +310,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ? descriptor.Languages[0]
             : _settings.Current.DefaultLanguage;
 
-    public string TargetApplicationLabel => IsListening
-        ? IsTextInjectionEnabled
-            ? "Focused external app · exact HWND checked per commit"
-            : "Typing disabled"
-        : "Typing paused";
+    public string TargetApplicationLabel => string.IsNullOrWhiteSpace(PasteRecognizedSentencesHotkey)
+        ? "Paste shortcut disabled"
+        : $"Paste on demand · {PasteRecognizedSentencesHotkey}";
 
     public string ActionMessage
     {
@@ -678,7 +684,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 _settings.Current.ComputeBackend = value;
                 _settings.Current.DefaultBackend = value;
-                ActionMessage = "Compute changes take effect when the model is reloaded.";
+                ScheduleRecognitionReload();
                 PersistSettings();
                 _ = RefreshComputeStatusAsync();
             }
@@ -693,7 +699,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _recognitionMode, value))
             {
                 _settings.Current.RecognitionMode = value;
-                ActionMessage = "Recognition profile changes take effect when the model is reloaded.";
+                ScheduleRecognitionReload();
                 PersistSettings();
             }
         }
@@ -719,7 +725,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _settings.Current.Language = normalized;
             OnPropertyChanged();
             OnPropertyChanged(nameof(ActiveLanguageLabel));
-            ActionMessage = "Language changes take effect when the model is reloaded.";
+            ScheduleRecognitionReload();
             PersistSettings();
         }
     }
@@ -787,7 +793,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         : $"{PerformanceSnapshot.ProcessCpuPercent:N1}% CPU · " +
           $"{PerformanceSnapshot.RealtimeFactor:N2} RTF · " +
           $"{PerformanceSnapshot.AudioQueueDurationMs:N0} ms queued · " +
-          $"{PerformanceSnapshot.WorkingSetBytes / 1024d / 1024d:N0} MB";
+          $"{PerformanceSnapshot.WorkingSetBytes / 1024d / 1024d:N0} MB" +
+          (PerformanceSnapshot.DroppedAudioMilliseconds > 0
+              ? $" · Audio overload: {PerformanceSnapshot.DroppedAudioMilliseconds:N0} ms missed"
+              : string.Empty);
 
     public string ToggleListeningHotkey
     {
@@ -795,10 +804,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _toggleListeningHotkey, value);
     }
 
-    public string ToggleInjectionHotkey
+    public string PasteRecognizedSentencesHotkey
     {
-        get => _toggleInjectionHotkey;
-        set => SetProperty(ref _toggleInjectionHotkey, value);
+        get => _pasteRecognizedSentencesHotkey;
+        set => SetProperty(ref _pasteRecognizedSentencesHotkey, value);
     }
 
     public string ToggleCaptionsHotkey
@@ -813,10 +822,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _toggleListeningHotkeyError, value);
     }
 
-    public string ToggleInjectionHotkeyError
+    public string PasteRecognizedSentencesHotkeyError
     {
-        get => _toggleInjectionHotkeyError;
-        private set => SetProperty(ref _toggleInjectionHotkeyError, value);
+        get => _pasteRecognizedSentencesHotkeyError;
+        private set => SetProperty(ref _pasteRecognizedSentencesHotkeyError, value);
     }
 
     public string ToggleCaptionsHotkeyError
@@ -1002,7 +1011,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public void ToggleTextInjection() => IsTextInjectionEnabled = !IsTextInjectionEnabled;
+    private async Task PasteRecognizedSentencesAsync()
+    {
+        var result = await _coordinator.PastePendingAsync().ConfigureAwait(true);
+        ActionMessage = result?.DiagnosticMessage ?? "No recognized text is waiting to be pasted.";
+        RefreshPendingPaste();
+    }
+
+    private void RefreshPendingPaste()
+    {
+        var pending = _coordinator.PendingPaste;
+        PreviewStableText = pending.Text;
+        PreviewPendingText = pending.Partial.Length == 0 ? string.Empty :
+            (pending.Text.Length > 0 ? " " : string.Empty) + pending.Partial;
+    }
 
     public void ToggleCaptionOverlay() => IsCaptionOverlayEnabled = !IsCaptionOverlayEnabled;
 
@@ -1013,14 +1035,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             case RsttHotkey.ToggleListening:
                 _settings.Current.ToggleListeningHotkey = gesture;
                 ToggleListeningHotkeyError = string.Empty;
+                ToggleListeningHotkey = gesture;
                 break;
-            case RsttHotkey.ToggleTextInjection:
-                _settings.Current.ToggleInjectionHotkey = gesture;
-                ToggleInjectionHotkeyError = string.Empty;
+            case RsttHotkey.PasteRecognizedSentences:
+                _settings.Current.PasteRecognizedSentencesHotkey = gesture;
+                PasteRecognizedSentencesHotkeyError = string.Empty;
+                PasteRecognizedSentencesHotkey = gesture;
+                OnPropertyChanged(nameof(TargetApplicationLabel));
                 break;
             case RsttHotkey.ToggleCaptionOverlay:
                 _settings.Current.ToggleCaptionsHotkey = gesture;
                 ToggleCaptionsHotkeyError = string.Empty;
+                ToggleCaptionsHotkey = gesture;
                 break;
         }
 
@@ -1040,10 +1066,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 ToggleListeningHotkeyError = error;
                 OnPropertyChanged(nameof(ToggleListeningHotkey));
                 break;
-            case RsttHotkey.ToggleTextInjection:
-                _toggleInjectionHotkey = workingGesture;
-                ToggleInjectionHotkeyError = error;
-                OnPropertyChanged(nameof(ToggleInjectionHotkey));
+            case RsttHotkey.PasteRecognizedSentences:
+                _pasteRecognizedSentencesHotkey = workingGesture;
+                PasteRecognizedSentencesHotkeyError = error;
+                OnPropertyChanged(nameof(PasteRecognizedSentencesHotkey));
                 break;
             case RsttHotkey.ToggleCaptionOverlay:
                 _toggleCaptionsHotkey = workingGesture;
@@ -1123,21 +1149,48 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool _reloadRunning;
+    private int _reloadVersion;
+    private void ScheduleRecognitionReload()
+    {
+        if (_isInitializing || _disposed) return;
+        _reloadVersion++;
+        if (!_reloadRunning) _ = ReloadRecognitionSettingsAsync();
+    }
+
+    private async Task ReloadRecognitionSettingsAsync()
+    {
+        _reloadRunning = true;
+        var resume = IsListening;
+        try
+        {
+            int version;
+            do
+            {
+                version = _reloadVersion;
+                ActionMessage = "Applying recognition settings…";
+                await _coordinator.ReloadModelAsync().ConfigureAwait(true);
+            } while (version != _reloadVersion);
+            if (resume) await _coordinator.StartAsync().ConfigureAwait(true);
+            PerformanceSnapshot = _performance.GetSnapshot();
+            await RefreshComputeStatusAsync().ConfigureAwait(true);
+            ActionMessage = "Recognition settings applied.";
+        }
+        catch (Exception exception) { ReportCommandFailure(exception); }
+        finally { _reloadRunning = false; }
+    }
+
     private async Task RefreshComputeStatusAsync()
     {
         try
         {
-            var probes = await _computeDevices.ProbeAsync().ConfigureAwait(true);
-            var cpu = probes.FirstOrDefault(probe => probe.Backend == ComputeBackend.Cpu);
-            var cuda = probes.FirstOrDefault(probe => probe.Backend == ComputeBackend.Cuda);
-            ComputeStatus = ComputeBackend switch
-            {
-                ComputeBackend.Cpu => cpu?.Status ?? "CPU inference selected.",
-                ComputeBackend.Cuda when cuda?.IsAvailable == true => cuda.Status,
-                ComputeBackend.Cuda => $"CUDA unavailable; RSTT will fall back to CPU. {cuda?.Status}",
-                _ when cuda?.IsAvailable == true => $"Auto will use CUDA. {cuda.Status}",
-                _ => $"Auto will use CPU. {cuda?.Status ?? cpu?.Status}",
-            };
+            var report = await _computeDevices.GetDiagnosticsAsync(
+                ComputeBackend, ActiveModel?.Descriptor).ConfigureAwait(true);
+            var runtimeFailure = report.Layers.FirstOrDefault(layer =>
+                layer.Layer == ComputeReadinessLayer.ProviderLoad && layer.State == ComputeLayerState.Failed);
+            ComputeStatus = $"Requested: {ComputeBackend} · {ActiveRuntimeLabel}. " +
+                (runtimeFailure?.Status ?? report.ActiveBackendLabel);
+
         }
         catch (Exception exception)
         {
@@ -1559,12 +1612,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void ClearTranscript()
     {
-        _captionHistory.Reset();
-        CaptionSegments.Clear();
-        CurrentCaption = null;
-        PreviewStableText = string.Empty;
-        PreviewPendingText = string.Empty;
-        ActionMessage = "Transcript preview cleared.";
+        _coordinator.ClearPendingPaste();
+        RefreshPendingPaste();
+        ActionMessage = "Pending text cleared.";
     }
 
     private void ToggleOverlayPreview()
@@ -1604,7 +1654,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _computeBackend = settings.DefaultBackend;
         _recognitionMode = settings.RecognitionMode;
         _toggleListeningHotkey = settings.ToggleListeningHotkey;
-        _toggleInjectionHotkey = settings.ToggleInjectionHotkey;
+        _pasteRecognizedSentencesHotkey = settings.PasteRecognizedSentencesHotkey;
         _toggleCaptionsHotkey = settings.ToggleCaptionsHotkey;
         OnPropertyChanged(string.Empty);
     }
@@ -1641,7 +1691,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         destination.CaptionShowStatusIndicator = source.CaptionShowStatusIndicator;
         destination.CaptionShowStableTextOnly = source.CaptionShowStableTextOnly;
         destination.ToggleListeningHotkey = source.ToggleListeningHotkey;
-        destination.ToggleInjectionHotkey = source.ToggleInjectionHotkey;
+        destination.PasteRecognizedSentencesHotkey = source.PasteRecognizedSentencesHotkey;
         destination.ToggleCaptionsHotkey = source.ToggleCaptionsHotkey;
     }
 
@@ -1712,8 +1762,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
         {
-            PreviewStableText = update.StableText;
-            PreviewPendingText = update.PendingText;
+            RefreshPendingPaste();
             var captions = _captionHistory.Snapshot();
             RefreshCaptionCollection(captions);
         });
@@ -1742,6 +1791,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RaiseListeningProperties()
     {
+        OnPropertyChanged(nameof(ActiveRuntimeLabel));
         OnPropertyChanged(nameof(StartStopText));
         OnPropertyChanged(nameof(StartStopGlyph));
         OnPropertyChanged(nameof(IsListening));
@@ -1824,7 +1874,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
+            var provider = _performanceSnapshot?.Provider;
             PerformanceSnapshot = _performance.GetSnapshot();
+            if (provider != _performanceSnapshot?.Provider) _ = RefreshComputeStatusAsync();
         }
         catch (ObjectDisposedException)
         {
@@ -1838,9 +1890,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ApplicationState.Listening => new(
                 "Listening",
                 "Listening and transcribing",
-                IsTextInjectionEnabled
-                    ? "Stable commits are typed into the exact focused window."
-                    : "Captions are live; typing is disabled.",
+                "Speech is collected here. Focus an input and press your paste shortcut.",
                 "Stop listening",
                 "\uE71A"),
             ApplicationState.Ready => new(
